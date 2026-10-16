@@ -251,6 +251,7 @@
 
         # Bind-mount persistent user-owned directory to /usr/local inside the FHS container
         extraBwrapArgs = [
+          "--dir" "/usr/local"
           "--bind" "$HOME/.local/share/darling-lol/usr-local" "/usr/local"
         ];
 
