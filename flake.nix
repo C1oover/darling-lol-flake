@@ -162,14 +162,11 @@
         extraBuildCommands = ''
           mkdir -p $out/usr/local
           ln -s /usr/include $out/no-such-path
-          if [ -f "${pkgs.glibc.out}/lib/ld-linux-x86-64.so.2" ] && [ -d "$out/lib64" ]; then
-            ln -sf ${pkgs.glibc.out}/lib/ld-linux-x86-64.so.2 $out/lib64/ld-linux-x86-64.so.2
-          fi
         '';
 
+        # Removed the problematic symlink-destination bind mount
         extraBwrapArgs = [
           "--bind" "$HOME/.local/share/darling-lol/usr-local" "/usr/local"
-          "--ro-bind" "${pkgs.glibc}/lib/ld-linux-x86-64.so.2" "/lib64/ld-linux-x86-64.so.2"
         ];
 
         targetPkgs = pkgs: with pkgs; [
