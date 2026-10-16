@@ -50,7 +50,7 @@
 
         if [ ! -f "$STAMP_FILE" ] || [ "$(cat "$STAMP_FILE")" != "$CURRENT_SRC" ]; then
           echo "[lol-darling] Syncing darling-lol repository to $WORKDIR..."
-          rsync -a --chmod=u+rwX "$CURRENT_SRC/" "$WORKDIR/"
+          rsync -r --no-g --no-o --chmod=u+rwX "$CURRENT_SRC/" "$WORKDIR/"
           echo "$CURRENT_SRC" > "$STAMP_FILE"
         fi
 
