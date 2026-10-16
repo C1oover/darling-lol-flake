@@ -28,11 +28,29 @@
       clangUnwrappedFhsPkg = pkgs.runCommand "clang-unwrapped-fhs-${llvmPkgs.clang-unwrapped.version}" { } ''
         mkdir -p "$out/bin" "$out/lib/clang/${clangMajor}"
         
-        # Symlink raw unwrapped clang binaries
-        ln -s "${llvmPkgs.clang-unwrapped}/bin/clang" "$out/bin/clang"
-        ln -s "${llvmPkgs.clang-unwrapped}/bin/clang++" "$out/bin/clang++"
-        ln -s "${llvmPkgs.clang-unwrapped}/bin/clang-${clangMajor}" "$out/bin/clang-${clangMajor}"
-        
+        # Create a smart wrapper script for clang that automatically injects GCC paths
+        cat << 'EOF' > "$out/bin/clang"
+        #!/bin/sh
+        exec "${llvmPkgs.clang-unwrapped}/bin/clang" \
+          --gcc-toolchain="${pkgs.gcc}" \
+          -B"${pkgs.gcc.cc}/lib/gcc/x86_64-unknown-linux-gnu/${gccVersion}" \
+          -B"${pkgs.glibc}/lib" \
+          "$@"
+        EOF
+        chmod +x "$out/bin/clang"
+
+        cat << 'EOF' > "$out/bin/clang++"
+        #!/bin/sh
+        exec "${llvmPkgs.clang-unwrapped}/bin/clang++" \
+          --gcc-toolchain="${pkgs.gcc}" \
+          -B"${pkgs.gcc.cc}/lib/gcc/x86_64-unknown-linux-gnu/${gccVersion}" \
+          -B"${pkgs.glibc}/lib" \
+          "$@"
+        EOF
+        chmod +x "$out/bin/clang++"
+
+        ln -s "$out/bin/clang" "$out/bin/clang-${clangMajor}"
+
         # Symlink lld linkers
         for f in ${llvmPkgs.lld}/bin/*; do
           ln -s "$f" "$out/bin/$(basename "$f")"
@@ -75,7 +93,7 @@
         exec "$@"
       '';
 
-      lolInnerRunner = pkgs.writeShellScriptBin "lol-darling-inner" ''
+lolInnerRunner = pkgs.writeShellScriptBin "lol-darling-inner" ''
         set -euo pipefail
 
         STATE_DIR="''${XDG_DATA_HOME:-$HOME/.local/share}/darling-lol"
@@ -99,7 +117,7 @@
         cd "$WORKDIR"
 
         if [ ! -d "/usr/local/libexec/darling" ] || [ ! -x "/usr/local/bin/darling" ]; then
-          echo "[lol-darling] Verifying Unwrapped Clang toolchain..."
+          echo "[lol-darling] Verifying Smart Clang toolchain..."
           /usr/bin/clang --version >/dev/null
           echo "[lol-darling] Toolchain check passed."
 
@@ -110,12 +128,8 @@
           build/venv/bin/pip install --upgrade pip
           build/venv/bin/pip install -r requirements.txt
 
-          if [ -f "build/darling-src/build/CMakeCache.txt" ] && \
-             [ ! -f "build/darling-src/build/Makefile" ] && \
-             [ ! -f "build/darling-src/build/build.ninja" ]; then
-            echo "[lol-darling] Removing incomplete CMake cache before re-configuring..."
-            rm -rf build/darling-src/build/CMakeCache.txt build/darling-src/build/CMakeFiles
-          fi
+          # Always wipe cmake cache when fixing toolchain compiler checks
+          rm -rf build/darling-src/build/CMakeCache.txt build/darling-src/build/CMakeFiles
 
           build/venv/bin/python3 scripts/configure.py --guest-user "$USER"
           
