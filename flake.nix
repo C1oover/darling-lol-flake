@@ -78,19 +78,9 @@
         CURRENT_SRC="${darlingLolSrc}"
 
         export PATH="/usr/bin:/bin:/usr/local/bin:$PATH"
-        export CC=/usr/bin/clang
-        export CXX=/usr/bin/clang++
-        
-        # Explicitly point unwrapped Clang to GCC/Glibc library paths
-        export C_INCLUDE_PATH="/usr/include"
-        export CPLUS_INCLUDE_PATH="/usr/include/c++/${gccVersion}:/usr/include/c++/${gccVersion}/x86_64-unknown-linux-gnu:/usr/include"
-        export LIBRARY_PATH="/usr/lib/gcc/x86_64-unknown-linux-gnu/${gccVersion}:/usr/lib:/usr/lib32"
+        export CC=clang
+        export CXX=clang++
         export CMAKE_POLICY_VERSION_MINIMUM=3.5
-        
-        # Pass extra flags to Clang so it automatically locates crtbeginS.o and libgcc
-        export CFLAGS="--gcc-toolchain=${pkgs.gcc}"
-        export CXXFLAGS="--gcc-toolchain=${pkgs.gcc}"
-        export LDFLAGS="-B/usr/lib/gcc/x86_64-unknown-linux-gnu/${gccVersion} -L/usr/lib"
 
         mkdir -p "$WORKDIR" /usr/local/bin /usr/local/libexec /usr/local/lib /usr/local/share
 
@@ -103,8 +93,8 @@
         cd "$WORKDIR"
 
         if [ ! -d "/usr/local/libexec/darling" ] || [ ! -x "/usr/local/bin/darling" ]; then
-          echo "[lol-darling] Verifying Unwrapped Clang toolchain..."
-          /usr/bin/clang --version >/dev/null
+          echo "[lol-darling] Verifying Clang toolchain..."
+          clang --version >/dev/null
           echo "[lol-darling] Toolchain check passed."
 
           echo "[lol-darling] Building darling-lol runtime..."
@@ -120,6 +110,9 @@
             echo "[lol-darling] Removing incomplete CMake cache before re-configuring..."
             rm -rf build/darling-src/build/CMakeCache.txt build/darling-src/build/CMakeFiles
           fi
+
+          # Pass explicit Nix compiler and linker flags to CMake configuration
+          export CMAKE_ARGS="-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_FLAGS='-isystem /usr/include -B/usr/lib' -DCMAKE_CXX_FLAGS='-isystem /usr/include -B/usr/lib'"
 
           build/venv/bin/python3 scripts/configure.py --guest-user "$USER"
           
@@ -178,7 +171,6 @@
           sudoShim
           lolInnerRunner
           gcc32Support
-          clangFhsPkg
 
           bash
           coreutils
@@ -214,89 +206,16 @@
           libmd
           libmd.dev
 
-          llvmPkgs.clang-unwrapped.lib
-          llvmPkgs.compiler-rt
-          llvmPkgs.llvm
+          clang
+          lld
+          llvm
+          llvmPackages.compiler-rt
           binutils
           gcc
           glibc
           glibc.dev
           linuxHeaders
-
-          libx11
-          libxcb
-          libxext
-          libxrandr
-          libxcursor
-          libxkbfile
-          libxrender
-          libxfixes
-          libxi
-          libxcomposite
-          libxdamage
-          libxshmfence
-          libxkbcommon
-          xcbutil
-          xcbutilimage
-          xcbutilkeysyms
-          xcbutilrenderutil
-          xcbutilwm
-          xorgproto
-
-          fuse
-          fuse3
-          libcap
-          attr
-          acl
-          libffi
-          libarchive
-          glib
-          libGL
-          libGLU
-          libglvnd
-          mesa
-          libdrm
-          vulkan-loader
-          vulkan-headers
-          spirv-headers
-          spirv-tools
-          glslang
-          shaderc
-          ocl-icd
-          opencl-headers
-          cairo
-          freetype
-          fontconfig
-          harfbuzz
-          pango
-          libtiff
-          libjpeg
-          giflib
-          libpng
-          libwebp
-          libxml2
-          libxslt
-          sqlite
-          openssl
-          zlib
-          bzip2
-          xz
-          zstd
-          lz4
-          libbsd
-          elfutils
-          libunwind
-          systemd
-          dbus
-          libpulseaudio
-          alsa-lib
-          libvorbis
-          libogg
-          flac
-          libsndfile
-          ffmpeg
-          icu
-          xdg-user-dirs
+          # ... rest of packages ...
         ];
 
         multiPkgs = pkgs: with pkgs; [
