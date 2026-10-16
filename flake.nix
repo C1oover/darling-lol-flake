@@ -28,7 +28,7 @@
       clangUnwrappedFhsPkg = pkgs.runCommand "clang-unwrapped-fhs-${llvmPkgs.clang-unwrapped.version}" { } ''
         mkdir -p "$out/bin" "$out/lib/clang/${clangMajor}"
         
-        # Smart wrapper injecting GCC paths, library paths, and C++ standard headers
+        # Smart wrapper for C compiles
         cat << 'EOF' > "$out/bin/clang"
         #!/bin/sh
         exec "${llvmPkgs.clang-unwrapped}/bin/clang" \
@@ -41,6 +41,7 @@
         EOF
         chmod +x "$out/bin/clang"
 
+        # Smart wrapper for C++ compiles with explicit libstdc++ and glibc headers
         cat << 'EOF' > "$out/bin/clang++"
         #!/bin/sh
         exec "${llvmPkgs.clang-unwrapped}/bin/clang++" \
@@ -49,8 +50,9 @@
           -L"${pkgs.gcc.cc}/lib/gcc/x86_64-unknown-linux-gnu/${gccVersion}" \
           -L"${pkgs.glibc}/lib" \
           -B"${pkgs.glibc}/lib" \
-          -isystem "/usr/include/c++/${gccVersion}" \
-          -isystem "/usr/include/c++/${gccVersion}/x86_64-unknown-linux-gnu" \
+          -isystem "${pkgs.gcc.cc}/include/c++/${gccVersion}" \
+          -isystem "${pkgs.gcc.cc}/include/c++/${gccVersion}/x86_64-unknown-linux-gnu" \
+          -isystem "${pkgs.glibc.dev}/include" \
           "$@"
         EOF
         chmod +x "$out/bin/clang++"
@@ -69,6 +71,7 @@
           ln -s "${llvmPkgs.compiler-rt}/lib" "$out/lib/clang/${clangMajor}/lib"
         fi
       '';
+
       gcc32Support = pkgs.runCommand "gcc-32-support-${gccVersion}" { } ''
         target_lib="$out/lib/gcc/x86_64-unknown-linux-gnu/${gccVersion}/32"
         mkdir -p "$target_lib"
