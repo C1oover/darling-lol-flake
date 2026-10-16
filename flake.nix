@@ -160,12 +160,12 @@
         extraOutputsToInstall = [ "dev" "lib" ];
 
         extraBuildCommands = ''
-          mkdir -p $out/usr/local $out/lib64
-          ln -s /usr/include $out/no-such-path
-          if [ -f "${pkgs.glibc.out}/lib/ld-linux-x86-64.so.2" ]; then
-            ln -sf ${pkgs.glibc.out}/lib/ld-linux-x86-64.so.2 $out/lib64/ld-linux-x86-64.so.2
-          fi
-        '';
+         mkdir -p $out/usr/local
+         ln -s /usr/include $out/no-such-path
+         if [ -f "${pkgs.glibc.out}/lib/ld-linux-x86-64.so.2" ] && [ ! -f "$out/lib64/ld-linux-x86-64.so.2" ]; then
+           ln -sf ${pkgs.glibc.out}/lib/ld-linux-x86-64.so.2 $out/lib64/ld-linux-x86-64.so.2
+         fi
+       '';
 
         extraBwrapArgs = [
           "--bind" "$HOME/.local/share/darling-lol/usr-local" "/usr/local"
