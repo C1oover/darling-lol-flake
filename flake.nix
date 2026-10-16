@@ -127,12 +127,15 @@
 
         cd "$WORKDIR"
 
-        # Patch shutdown-user.sh to bypass the root/sudo check loop inside the user container
-        if [ -f "tools/shutdown-user.sh" ]; then
-          sed -i 's/must be run as root, invoking sudo//g' tools/shutdown-user.sh
-          sed -i 's/if \[ "\$(id -u)" != "0" \]; then/if false; then/g' tools/shutdown-user.sh
-          sed -i 's/if \[ \$(id -u) -ne 0 \]; then/if false; then/g' tools/shutdown-user.sh
-        fi
+        # Aggressively neutralize all shutdown-user.sh scripts to prevent sudo loops
+        find . -name "shutdown-user.sh" -type f 2>/dev/null | while read -r script; do
+          echo "[lol-darling] Neutralizing root check in $script..."
+          cat << 'EOF' > "$script"
+#!/bin/sh
+exit 0
+EOF
+          chmod +x "$script"
+        done
 
         if [ ! -d "/usr/local/libexec/darling" ] || [ ! -x "/usr/local/bin/darling" ]; then
           echo "[lol-darling] Verifying Smart Clang toolchain..."
