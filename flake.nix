@@ -16,7 +16,7 @@
       darlingLolSrc = pkgs.fetchFromGitHub {
         owner = "lucannez64";
         repo = "darling-lol";
-        rev = "HEAD";
+        rev = "HEAD"; # Keep your pinned commit rev
         hash = "sha256-xNwX3mzaDmOVlwLaqKAKj6SUP0TBjHa10fM/tiyHeXA=";
       };
 
@@ -38,15 +38,16 @@
 
         STATE_DIR="''${XDG_DATA_HOME:-$HOME/.local/share}/darling-lol"
         WORKDIR="$STATE_DIR/workdir"
-        LOCAL_PREFIX="$STATE_DIR/local"
         STAMP_FILE="$WORKDIR/.nix-source-stamp"
         CURRENT_SRC="${darlingLolSrc}"
 
-        export PATH="$LOCAL_PREFIX/bin:$PATH"
-        export CC=clang
-        export CXX=clang++
+        export PATH="/usr/local/bin:$PATH"
+        export CC=/usr/bin/clang
+        export CXX=/usr/bin/clang++
+        # Required for CMake 4.x compatibility with older Darling subprojects
+        export CMAKE_POLICY_VERSION_MINIMUM=3.5
 
-        mkdir -p "$WORKDIR" "$LOCAL_PREFIX"
+        mkdir -p "$WORKDIR" /usr/local/bin /usr/local/libexec /usr/local/lib /usr/local/share
 
         if [ ! -f "$STAMP_FILE" ] || [ "$(cat "$STAMP_FILE")" != "$CURRENT_SRC" ]; then
           echo "[lol-darling] Syncing darling-lol repository to $WORKDIR..."
@@ -56,19 +57,25 @@
 
         cd "$WORKDIR"
 
-        # Build and install entirely inside user-owned $LOCAL_PREFIX (no root /usr/local needed)
-        if [ ! -d "$LOCAL_PREFIX/libexec/darling" ] || [ ! -x "$LOCAL_PREFIX/bin/darling" ]; then
-          echo "[lol-darling] Building darling-lol runtime (first run - requires space)..."
+        if [ ! -d "/usr/local/libexec/darling" ] || [ ! -x "/usr/local/bin/darling" ]; then
+          echo "[lol-darling] Building darling-lol runtime..."
           if [ ! -d "build/venv" ]; then
             python3 -m venv build/venv
           fi
           build/venv/bin/pip install --upgrade pip
           build/venv/bin/pip install -r requirements.txt
 
-          # Patch configure.py or prefix paths if needed, or point cmake install directly there
+          # Clean stale CMake cache from any prior failed configure without deleting cloned submodules
+          if [ -f "build/darling-src/build/CMakeCache.txt" ] && \
+             [ ! -f "build/darling-src/build/Makefile" ] && \
+             [ ! -f "build/darling-src/build/build.ninja" ]; then
+            echo "[lol-darling] Removing incomplete CMake cache before re-configuring..."
+            rm -rf build/darling-src/build/CMakeCache.txt build/darling-src/build/CMakeFiles
+          fi
+
           build/venv/bin/python3 scripts/configure.py --guest-user "$USER"
           ./scripts/build.sh
-          cmake --install build/darling-src/build --prefix "$LOCAL_PREFIX"
+          cmake --install build/darling-src/build --prefix /usr/local
           ./scripts/install-runtime.sh
         fi
 
@@ -105,9 +112,23 @@
       lolFhsEnv = pkgs.buildFHSEnv {
         name = "lol-darling-fhs";
 
+        # Install .dev outputs (/usr/include headers, .pc files, and CMake configs) for all packages
+        extraOutputsToInstall = [ "dev" ];
+
+        # Pre-create /usr/local in the FHS image so bwrap can bind-mount onto it
+        extraBuildCommands = ''
+          mkdir -p $out/usr/local
+        '';
+
+        extraBwrapArgs = [
+          "--bind" "$HOME/.local/share/darling-lol/usr-local" "/usr/local"
+        ];
+
         targetPkgs = pkgs: with pkgs; [
           sudoShim
           lolInnerRunner
+
+          # Core build & script tools
           bash
           coreutils
           findutils
@@ -136,12 +157,20 @@
           python3Packages.pip
           python3Packages.virtualenv
           nodejs
-          clang
-          lld
-          llvm
-          libclang
+          perl
+          ruby
+
+          # Unwrapped Clang/LLVM + multilib GCC runtime (crtbeginS.o, libgcc.a, C++ headers) + Linux headers
+          llvmPackages.clang-unwrapped
+          llvmPackages.lld
+          llvmPackages.llvm
+          binutils-unwrapped
+          gcc_multi.cc
+          gcc_multi.cc.lib
           glibc_multi
-          gcc_multi
+          linuxHeaders
+
+          # X11 / XCB / SHM development files (Nixpkgs 26.11 top-level names)
           libx11
           libxcb
           libxext
@@ -161,15 +190,20 @@
           xcbutilrenderutil
           xcbutilwm
           xorgproto
+
+          # Graphics, Audio, FUSE, and Darling dependencies
           fuse
           fuse3
           libcap
           attr
           acl
+          libffi
+          glib
           libGL
           libGLU
           libglvnd
           mesa
+          libdrm
           vulkan-loader
           vulkan-headers
           ocl-icd
@@ -200,6 +234,10 @@
           dbus
           libpulseaudio
           alsa-lib
+          libvorbis
+          libogg
+          flac
+          libsndfile
           ffmpeg
           icu
           xdg-user-dirs
@@ -207,16 +245,29 @@
 
         multiPkgs = pkgs: with pkgs; [
           glibc
+          gcc.cc.lib
           zlib
+          bzip2
+          xz
+          openssl
+          libxml2
           freetype
           fontconfig
+          cairo
           libGL
           libGLU
           libglvnd
           mesa
+          libdrm
           vulkan-loader
           libpulseaudio
           alsa-lib
+          dbus
+          systemd
+          elfutils
+          libbsd
+          libffi
+          libcap
           libx11
           libxcb
           libxext
@@ -226,12 +277,12 @@
           libxfixes
           libxi
           libxshmfence
+          libxkbfile
+          libxkbcommon
           libjpeg
           libpng
           libtiff
           giflib
-          libxml2
-          dbus
         ];
 
         runScript = "lol-darling-inner";
@@ -242,7 +293,7 @@
         runtimeInputs = [ pkgs.coreutils lolFhsEnv ];
         text = ''
           mkdir -p \
-            "$HOME/.local/share/darling-lol/local" \
+            "$HOME/.local/share/darling-lol/usr-local" \
             "$HOME/.local/share/darling-lol/workdir" \
             "$HOME/.darling"
           exec lol-darling-fhs "$@"
