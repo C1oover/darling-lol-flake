@@ -28,7 +28,7 @@
       clangUnwrappedFhsPkg = pkgs.runCommand "clang-unwrapped-fhs-${llvmPkgs.clang-unwrapped.version}" { } ''
         mkdir -p "$out/bin" "$out/lib/clang/${clangMajor}"
         
-        # Enhanced smart wrapper that explicitly injects GCC library paths and libgcc search paths
+        # Smart wrapper injecting GCC paths, library paths, and C++ standard headers
         cat << 'EOF' > "$out/bin/clang"
         #!/bin/sh
         exec "${llvmPkgs.clang-unwrapped}/bin/clang" \
@@ -49,6 +49,8 @@
           -L"${pkgs.gcc.cc}/lib/gcc/x86_64-unknown-linux-gnu/${gccVersion}" \
           -L"${pkgs.glibc}/lib" \
           -B"${pkgs.glibc}/lib" \
+          -isystem "/usr/include/c++/${gccVersion}" \
+          -isystem "/usr/include/c++/${gccVersion}/x86_64-unknown-linux-gnu" \
           "$@"
         EOF
         chmod +x "$out/bin/clang++"
