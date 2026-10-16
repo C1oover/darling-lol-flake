@@ -89,16 +89,27 @@
       '';
 
       sudoShim = pkgs.writeShellScriptBin "sudo" ''
+        # If running as root, just execute the command
+        if [ "$(id -u)" = "0" ]; then
+          exec "$@"
+        fi
+        
+        # Otherwise, strip sudo-specific flags and execute the payload
         while [ $# -gt 0 ]; do
           case "$1" in
-            -E|-H|-n|-s) shift ;;
-            -u|-g) shift 2 ;;
+            -E|-H|-n|-s|-i|-A) shift ;;
+            -u|-g|-C|-D|-R) shift 2 ;;
             --) shift; break ;;
             -*) shift ;;
             *) break ;;
           esac
         done
-        exec "$@"
+        
+        if [ $# -eq 0 ]; then
+          exec bash
+        else
+          exec "$@"
+        fi
       '';
 
 lolInnerRunner = pkgs.writeShellScriptBin "lol-darling-inner" ''
