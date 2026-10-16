@@ -133,12 +133,10 @@ lolInnerRunner = pkgs.writeShellScriptBin "lol-darling-inner" ''
           build/venv/bin/pip install --upgrade pip
           build/venv/bin/pip install -r requirements.txt
 
-          # Always wipe cmake cache when fixing toolchain compiler checks
-          rm -rf build/darling-src/build/CMakeCache.txt build/darling-src/build/CMakeFiles
-
           build/venv/bin/python3 scripts/configure.py --guest-user "$USER"
           
-          export MAKEFLAGS="-j4"
+          # Use a safer job count to avoid compilation crashes
+          export MAKEFLAGS="-j2"
           ./scripts/build.sh
           
           cmake --install build/darling-src/build --prefix /usr/local
