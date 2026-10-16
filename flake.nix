@@ -22,7 +22,7 @@
 
       llvmPkgs = pkgs.llvmPackages;
       clangMajor = pkgs.lib.versions.major llvmPkgs.clang-unwrapped.version;
-      gccVersion = pkgs.gcc_multi.cc.version;
+      gccVersion = pkgs.gcc.cc.version;
 
       # Re-unites clang-unwrapped's binary (.out) with its builtin headers (.lib)
       # and compiler-rt so realpath(/proc/self/exe) -> ../lib/clang/<major>/include works.
@@ -37,6 +37,24 @@
         if [ -d "${llvmPkgs.compiler-rt}/lib" ]; then
           ln -s "${llvmPkgs.compiler-rt}/lib" "$out/lib/clang/${clangMajor}/lib"
         fi
+      '';
+
+      # Provides /usr/lib/gcc/x86_64-unknown-linux-gnu/<ver>/32 and 32-bit C++ headers
+      # for `clang -m32` without pulling in glibc_multi (which clobbers 64-bit /usr/lib).
+      gcc32Support = pkgs.runCommand "gcc-32-support-${gccVersion}" { } ''
+        target_lib="$out/lib/gcc/x86_64-unknown-linux-gnu/${gccVersion}/32"
+        mkdir -p "$target_lib"
+        for f in ${pkgs.pkgsi686Linux.gcc.cc}/lib/gcc/i686-unknown-linux-gnu/${gccVersion}/*; do
+          ln -s "$f" "$target_lib/$(basename "$f")"
+        done
+        for f in ${pkgs.pkgsi686Linux.gcc.cc.lib}/lib/*; do
+          ln -sf "$f" "$target_lib/$(basename "$f")"
+        done
+
+        target_inc="$out/include/c++/${gccVersion}/x86_64-unknown-linux-gnu"
+        mkdir -p "$target_inc"
+        ln -s "${pkgs.pkgsi686Linux.gcc.cc}/include/c++/${gccVersion}/i686-unknown-linux-gnu" \
+          "$target_inc/32"
       '';
 
       sudoShim = pkgs.writeShellScriptBin "sudo" ''
@@ -66,11 +84,12 @@
         export C_INCLUDE_PATH="/usr/include"
         export CPLUS_INCLUDE_PATH="/usr/include/c++/${gccVersion}:/usr/include/c++/${gccVersion}/x86_64-unknown-linux-gnu:/usr/include"
         export LIBRARY_PATH="/usr/lib/gcc/x86_64-unknown-linux-gnu/${gccVersion}:/usr/lib:/usr/lib32"
+        export LD_LIBRARY_PATH="/usr/local/lib:/usr/local/lib64:/usr/lib:/usr/lib32''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
         export CMAKE_POLICY_VERSION_MINIMUM=3.5
 
         mkdir -p "$WORKDIR" /usr/local/bin /usr/local/libexec /usr/local/lib /usr/local/share
 
-        if [ ! -f "$STAMP_FILE" ] || [ "$(cat "$STAMP_FILE")" != "$CURRENT_SRC" ]; then
+        if [ ! -f "$STAMP_FILE" ] \vert{}\vert{} [ "$(cat "$STAMP_FILE")" != "$CURRENT_SRC" ]; then
           echo "[lol-darling] Syncing darling-lol repository to $WORKDIR..."
           rsync -r --no-g --no-o --chmod=u+rwX "$CURRENT_SRC/" "$WORKDIR/"
           echo "$CURRENT_SRC" > "$STAMP_FILE"
@@ -79,6 +98,16 @@
         cd "$WORKDIR"
 
         if [ ! -d "/usr/local/libexec/darling" ] || [ ! -x "/usr/local/bin/darling" ]; then
+          echo "[lol-darling] Verifying Clang 64-bit & 32-bit toolchain execution..."
+          TMP_TEST="$(mktemp -d)"
+          printf '#include <stdio.h>\nint main(){printf("%%d\\n", __clang_major__);return 0;}\n' > "$TMP_TEST/t.c"
+          printf '#include <iostream>\nint main(){std::cout << __clang_major__ << std::endl;return 0;}\n' > "$TMP_TEST/t.cpp"
+          /usr/bin/clang "$TMP_TEST/t.c" -o "$TMP_TEST/tc64" && "$TMP_TEST/tc64" >/dev/null
+          /usr/bin/clang++ "$TMP_TEST/t.cpp" -o "$TMP_TEST/tcpp64" && "$TMP_TEST/tcpp64" >/dev/null
+          /usr/bin/clang -m32 "$TMP_TEST/t.c" -o "$TMP_TEST/tc32" && "$TMP_TEST/tc32" >/dev/null
+          rm -rf "$TMP_TEST"
+          echo "[lol-darling] Toolchain check passed."
+
           echo "[lol-darling] Building darling-lol runtime..."
           if [ ! -d "build/venv" ]; then
             python3 -m venv build/venv
@@ -94,15 +123,7 @@
           fi
 
           build/venv/bin/python3 scripts/configure.py --guest-user "$USER"
-
-          if ! ./scripts/build.sh; then
-            echo "[lol-darling] Build failed. Inspecting clang_version_check.cmake:" >&2
-            if [ -f "build/darling-src/cmake/clang_version_check.cmake" ]; then
-              nl -ba "build/darling-src/cmake/clang_version_check.cmake" >&2
-            fi
-            exit 1
-          fi
-
+          ./scripts/build.sh
           cmake --install build/darling-src/build --prefix /usr/local
           ./scripts/install-runtime.sh
         fi
@@ -142,11 +163,12 @@
 
         extraOutputsToInstall = [ "dev" "lib" ];
 
-        # 1. Pre-create /usr/local so bwrap can bind-mount onto it
-        # 2. Point Nixpkgs's hardcoded C_INCLUDE_DIRS (/no-such-path) to /usr/include
         extraBuildCommands = ''
           mkdir -p $out/usr/local
           ln -s /usr/include $out/no-such-path
+          if [ ! -e "$out/usr/lib/ld-linux.so.2" ] && [ -e "$out/usr/lib32/ld-linux.so.2" ]; then
+            ln -s /usr/lib32/ld-linux.so.2 $out/usr/lib/ld-linux.so.2
+          fi
         '';
 
         extraBwrapArgs = [
@@ -157,6 +179,7 @@
           sudoShim
           lolInnerRunner
           clangFhsPkg
+          gcc32Support
 
           # Core build & script tools
           bash
@@ -190,7 +213,7 @@
           perl
           ruby
 
-          # Clang/LLVM + LLD + compiler-rt + multilib GCC runtime + Linux kernel headers
+          # 64-bit Clang/LLVM + standard 64-bit GCC/Glibc runtime + Linux kernel headers
           llvmPkgs.clang-unwrapped.lib
           llvmPkgs.compiler-rt
           llvmPkgs.lld
@@ -198,9 +221,10 @@
           llvmPkgs.llvm.dev
           llvmPkgs.llvm.lib
           binutils-unwrapped
-          gcc_multi.cc
-          gcc_multi.cc.lib
-          glibc_multi
+          gcc.cc
+          gcc.cc.lib
+          glibc
+          glibc.dev
           linuxHeaders
 
           # X11 / XCB / SHM development files
@@ -231,6 +255,7 @@
           attr
           acl
           libffi
+          libarchive
           glib
           libGL
           libGLU
@@ -282,6 +307,7 @@
 
         multiPkgs = pkgs: with pkgs; [
           glibc
+          glibc.dev
           gcc.cc.lib
           llvmPkgs.compiler-rt
           zlib
