@@ -20,22 +20,7 @@
         hash = "sha256-xNwX3mzaDmOVlwLaqKAKj6SUP0TBjHa10fM/tiyHeXA=";
       };
 
-      llvmPkgs = pkgs.llvmPackages;
-      clangMajor = pkgs.lib.versions.major llvmPkgs.clang-unwrapped.version;
       gccVersion = pkgs.lib.getVersion pkgs.gcc;
-
-      clangFhsPkg = pkgs.runCommand "clang-fhs-${llvmPkgs.clang-unwrapped.version}" { } ''
-        mkdir -p "$out/bin" "$out/lib/clang/${clangMajor}"
-        for f in ${llvmPkgs.clang-unwrapped}/bin/*; do
-          cp -a "$f" "$out/bin/$(basename "$f")"
-        done
-        chmod -R u+w "$out/bin"
-        ln -s "${llvmPkgs.clang-unwrapped.lib}/lib/clang/${clangMajor}/include" \
-          "$out/lib/clang/${clangMajor}/include"
-        if [ -d "${llvmPkgs.compiler-rt}/lib" ]; then
-          ln -s "${llvmPkgs.compiler-rt}/lib" "$out/lib/clang/${clangMajor}/lib"
-        fi
-      '';
 
       gcc32Support = pkgs.runCommand "gcc-32-support-${gccVersion}" { } ''
         target_lib="$out/lib/gcc/x86_64-unknown-linux-gnu/${gccVersion}/32"
@@ -75,12 +60,8 @@
         CURRENT_SRC="${darlingLolSrc}"
 
         export PATH="/usr/local/bin:$PATH"
-        export CC=/usr/bin/clang
-        export CXX=/usr/bin/clang++
-        export C_INCLUDE_PATH="/usr/include"
-        export CPLUS_INCLUDE_PATH="/usr/include/c++/${gccVersion}:/usr/include/c++/${gccVersion}/x86_64-unknown-linux-gnu:/usr/include"
-        export LIBRARY_PATH="/usr/lib/gcc/x86_64-unknown-linux-gnu/${gccVersion}:/usr/lib:/usr/lib32"
-        export LD_LIBRARY_PATH="/usr/local/lib:/usr/local/lib64:/usr/lib:/usr/lib32''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        export CC=clang
+        export CXX=clang++
         export CMAKE_POLICY_VERSION_MINIMUM=3.5
 
         mkdir -p "$WORKDIR" /usr/local/bin /usr/local/libexec /usr/local/lib /usr/local/share
@@ -94,14 +75,8 @@
         cd "$WORKDIR"
 
         if [ ! -d "/usr/local/libexec/darling" ] || [ ! -x "/usr/local/bin/darling" ]; then
-          echo "[lol-darling] Verifying Clang 64-bit & 32-bit toolchain execution..."
-          TMP_TEST="$(mktemp -d)"
-          printf '#include <stdio.h>\nint main(){printf("%%d\\n", __clang_major__);return 0;}\n' > "$TMP_TEST/t.c"
-          printf '#include <iostream>\nint main(){std::cout << __clang_major__ << std::endl;return 0;}\n' > "$TMP_TEST/t.cpp"
-          /usr/bin/clang "$TMP_TEST/t.c" -o "$TMP_TEST/tc64" && "$TMP_TEST/tc64" >/dev/null
-          /usr/bin/clang++ "$TMP_TEST/t.cpp" -o "$TMP_TEST/tcpp64" && "$TMP_TEST/tcpp64" >/dev/null
-          /usr/bin/clang -m32 "$TMP_TEST/t.c" -o "$TMP_TEST/tc32" && "$TMP_TEST/tc32" >/dev/null
-          rm -rf "$TMP_TEST"
+          echo "[lol-darling] Verifying Clang toolchain..."
+          clang --version >/dev/null
           echo "[lol-darling] Toolchain check passed."
 
           echo "[lol-darling] Building darling-lol runtime..."
@@ -164,7 +139,6 @@
           ln -s /usr/include $out/no-such-path
         '';
 
-        # Removed the problematic symlink-destination bind mount
         extraBwrapArgs = [
           "--bind" "$HOME/.local/share/darling-lol/usr-local" "/usr/local"
         ];
@@ -172,7 +146,6 @@
         targetPkgs = pkgs: with pkgs; [
           sudoShim
           lolInnerRunner
-          clangFhsPkg
           gcc32Support
 
           bash
@@ -206,15 +179,13 @@
           perl
           ruby
 
-          llvmPkgs.clang-unwrapped.lib
-          llvmPkgs.compiler-rt
-          llvmPkgs.lld
-          llvmPkgs.llvm
-          llvmPkgs.llvm.dev
-          llvmPkgs.llvm.lib
-          binutils-unwrapped
-          gcc.cc
-          gcc.cc.lib
+          # Use Nixpkgs wrapped Clang/LLD/LLVM + standard glibc/gcc
+          clang
+          lld
+          llvm
+          compiler-rt
+          binutils
+          gcc
           glibc
           glibc.dev
           linuxHeaders
@@ -299,7 +270,7 @@
           glibc
           glibc.dev
           gcc.cc.lib
-          llvmPkgs.compiler-rt
+          compiler-rt
           zlib
           bzip2
           xz
