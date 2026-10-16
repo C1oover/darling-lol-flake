@@ -17,7 +17,7 @@
         owner = "lucannez64";
         repo = "darling-lol";
         rev = "HEAD";
-        hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        hash = "sha256-xNwX3mzaDmOVlwLaqKAKj6SUP0TBjHa10fM/tiyHeXA=";
       };
 
       sudoShim = pkgs.writeShellScriptBin "sudo" ''
