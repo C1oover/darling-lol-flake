@@ -94,7 +94,11 @@
           fi
 
           build/venv/bin/python3 scripts/configure.py --guest-user "$USER"
+          
+          # Cap parallel jobs to prevent header generation race conditions in submodules
+          export MAKEFLAGS="-j4"
           ./scripts/build.sh
+          
           cmake --install build/darling-src/build --prefix /usr/local
           ./scripts/install-runtime.sh
         fi
