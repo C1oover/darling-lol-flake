@@ -119,32 +119,16 @@
 
         mkdir -p "$WORKDIR" /usr/local/bin /usr/local/libexec /usr/local/lib /usr/local/share
 
-        # Clean git state if workdir is already initialized to avoid patch application failures
-        if [ -d "$WORKDIR/.git" ]; then
-          echo "[lol-darling] Resetting dirty git workspace..."
-          cd "$WORKDIR"
-          git reset --hard HEAD
-          git clean -fdx
-          cd - >/dev/null
-        fi
-
+        # Completely wipe workdir on stamp change or corruption to ensure a pristine git repo for patching
         if [ ! -f "$STAMP_FILE" ] || [ "$(cat "$STAMP_FILE")" != "$CURRENT_SRC" ]; then
-          echo "[lol-darling] Syncing darling-lol repository to $WORKDIR..."
+          echo "[lol-darling] Syncing fresh darling-lol repository to $WORKDIR..."
+          rm -rf "$WORKDIR"
+          mkdir -p "$WORKDIR"
           rsync -r --no-g --no-o --chmod=u+rwX "$CURRENT_SRC/" "$WORKDIR/"
           echo "$CURRENT_SRC" > "$STAMP_FILE"
         fi
 
         cd "$WORKDIR"
-
-        # Neutralize all shutdown-user.sh scripts to prevent sudo loops
-        find . -name "shutdown-user.sh" -type f 2>/dev/null | while read -r script; do
-          echo "[lol-darling] Neutralizing root check in $script..."
-          cat << 'EOF' > "$script"
-#!/bin/sh
-exit 0
-EOF
-          chmod +x "$script"
-        done
 
         if [ ! -d "/usr/local/libexec/darling" ] || [ ! -x "/usr/local/bin/darling" ]; then
           echo "[lol-darling] Verifying Smart Clang toolchain..."
@@ -159,6 +143,16 @@ EOF
           build/venv/bin/pip install -r requirements.txt
 
           build/venv/bin/python3 scripts/configure.py --guest-user "$USER"
+
+          # Neutralize shutdown-user.sh AFTER configure/patch step has initialized the submodule workdir
+          find . -name "shutdown-user.sh" -type f 2>/dev/null | while read -r script; do
+            echo "[lol-darling] Neutralizing root check in $script..."
+            cat << 'EOF' > "$script"
+#!/bin/sh
+exit 0
+EOF
+            chmod +x "$script"
+          done
           
           export MAKEFLAGS="-j2"
           ./scripts/build.sh
