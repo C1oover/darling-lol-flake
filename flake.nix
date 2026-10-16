@@ -24,7 +24,6 @@
       clangMajor = pkgs.lib.versions.major llvmPkgs.clang-unwrapped.version;
       gccVersion = pkgs.lib.getVersion pkgs.gcc;
 
-      # Completely unwrapped Clang/LLD package to bypass cc-wrapper flag injection
       clangUnwrappedFhsPkg = pkgs.runCommand "clang-unwrapped-fhs-${llvmPkgs.clang-unwrapped.version}" { } ''
         mkdir -p "$out/bin" "$out/lib/clang/${clangMajor}"
         
@@ -89,31 +88,9 @@
       '';
 
       sudoShim = pkgs.writeShellScriptBin "sudo" ''
-        # If the script being called is shutdown-user.sh or similar, fake root success or execute directly
-        for arg in "$@"; do
-          case "$arg" in
-            *shutdown-user.sh* | *darlingserver* | *darling-init*)
-              # Force execution bypassing the root check loop
-              shift
-              # Find and execute the actual script argument
-              for subarg in "$@"; do
-                if [ -f "$subarg" ]; then
-                  exec "$subarg"
-                fi
-              done
-              exec "$@"
-              ;;
-          esac
-        done
-
-        if [ "$(id -u)" = "0" ]; then
-          exec "$@"
-        fi
-        
         while [ $# -gt 0 ]; do
           case "$1" in
-            -E|-H|-n|-s|-i|-A) shift ;;
-            -u|-g|-C|-D|-R) shift 2 ;;
+            -E|-H|-n|-s|-i|-A|-u*|-g*|-C*|-D*|-R*) shift ;;
             --) shift; break ;;
             -*) shift ;;
             *) break ;;
@@ -127,7 +104,7 @@
         fi
       '';
 
-lolInnerRunner = pkgs.writeShellScriptBin "lol-darling-inner" ''
+      lolInnerRunner = pkgs.writeShellScriptBin "lol-darling-inner" ''
         set -euo pipefail
 
         STATE_DIR="''${XDG_DATA_HOME:-$HOME/.local/share}/darling-lol"
@@ -150,6 +127,13 @@ lolInnerRunner = pkgs.writeShellScriptBin "lol-darling-inner" ''
 
         cd "$WORKDIR"
 
+        # Patch shutdown-user.sh to bypass the root/sudo check loop inside the user container
+        if [ -f "tools/shutdown-user.sh" ]; then
+          sed -i 's/must be run as root, invoking sudo//g' tools/shutdown-user.sh
+          sed -i 's/if \[ "\$(id -u)" != "0" \]; then/if false; then/g' tools/shutdown-user.sh
+          sed -i 's/if \[ \$(id -u) -ne 0 \]; then/if false; then/g' tools/shutdown-user.sh
+        fi
+
         if [ ! -d "/usr/local/libexec/darling" ] || [ ! -x "/usr/local/bin/darling" ]; then
           echo "[lol-darling] Verifying Smart Clang toolchain..."
           /usr/bin/clang --version >/dev/null
@@ -164,7 +148,6 @@ lolInnerRunner = pkgs.writeShellScriptBin "lol-darling-inner" ''
 
           build/venv/bin/python3 scripts/configure.py --guest-user "$USER"
           
-          # Use a safer job count to avoid compilation crashes
           export MAKEFLAGS="-j2"
           ./scripts/build.sh
           
