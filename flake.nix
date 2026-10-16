@@ -16,9 +16,28 @@
       darlingLolSrc = pkgs.fetchFromGitHub {
         owner = "lucannez64";
         repo = "darling-lol";
-        rev = "HEAD"; # Keep your pinned commit rev
+        rev = "HEAD";
         hash = "sha256-xNwX3mzaDmOVlwLaqKAKj6SUP0TBjHa10fM/tiyHeXA=";
       };
+
+      llvmPkgs = pkgs.llvmPackages;
+      clangMajor = pkgs.lib.versions.major llvmPkgs.clang-unwrapped.version;
+      gccVersion = pkgs.gcc_multi.cc.version;
+
+      # Re-unites clang-unwrapped's binary (.out) with its builtin headers (.lib)
+      # and compiler-rt so realpath(/proc/self/exe) -> ../lib/clang/<major>/include works.
+      clangFhsPkg = pkgs.runCommand "clang-fhs-${llvmPkgs.clang-unwrapped.version}" { } ''
+        mkdir -p "$out/bin" "$out/lib/clang/${clangMajor}"
+        for f in ${llvmPkgs.clang-unwrapped}/bin/*; do
+          cp -a "$f" "$out/bin/$(basename "$f")"
+        done
+        chmod -R u+w "$out/bin"
+        ln -s "${llvmPkgs.clang-unwrapped.lib}/lib/clang/${clangMajor}/include" \
+          "$out/lib/clang/${clangMajor}/include"
+        if [ -d "${llvmPkgs.compiler-rt}/lib" ]; then
+          ln -s "${llvmPkgs.compiler-rt}/lib" "$out/lib/clang/${clangMajor}/lib"
+        fi
+      '';
 
       sudoShim = pkgs.writeShellScriptBin "sudo" ''
         while [ $# -gt 0 ]; do
@@ -44,7 +63,9 @@
         export PATH="/usr/local/bin:$PATH"
         export CC=/usr/bin/clang
         export CXX=/usr/bin/clang++
-        # Required for CMake 4.x compatibility with older Darling subprojects
+        export C_INCLUDE_PATH="/usr/include"
+        export CPLUS_INCLUDE_PATH="/usr/include/c++/${gccVersion}:/usr/include/c++/${gccVersion}/x86_64-unknown-linux-gnu:/usr/include"
+        export LIBRARY_PATH="/usr/lib/gcc/x86_64-unknown-linux-gnu/${gccVersion}:/usr/lib:/usr/lib32"
         export CMAKE_POLICY_VERSION_MINIMUM=3.5
 
         mkdir -p "$WORKDIR" /usr/local/bin /usr/local/libexec /usr/local/lib /usr/local/share
@@ -65,7 +86,6 @@
           build/venv/bin/pip install --upgrade pip
           build/venv/bin/pip install -r requirements.txt
 
-          # Clean stale CMake cache from any prior failed configure without deleting cloned submodules
           if [ -f "build/darling-src/build/CMakeCache.txt" ] && \
              [ ! -f "build/darling-src/build/Makefile" ] && \
              [ ! -f "build/darling-src/build/build.ninja" ]; then
@@ -74,7 +94,15 @@
           fi
 
           build/venv/bin/python3 scripts/configure.py --guest-user "$USER"
-          ./scripts/build.sh
+
+          if ! ./scripts/build.sh; then
+            echo "[lol-darling] Build failed. Inspecting clang_version_check.cmake:" >&2
+            if [ -f "build/darling-src/cmake/clang_version_check.cmake" ]; then
+              nl -ba "build/darling-src/cmake/clang_version_check.cmake" >&2
+            fi
+            exit 1
+          fi
+
           cmake --install build/darling-src/build --prefix /usr/local
           ./scripts/install-runtime.sh
         fi
@@ -112,12 +140,13 @@
       lolFhsEnv = pkgs.buildFHSEnv {
         name = "lol-darling-fhs";
 
-        # Install .dev outputs (/usr/include headers, .pc files, and CMake configs) for all packages
-        extraOutputsToInstall = [ "dev" ];
+        extraOutputsToInstall = [ "dev" "lib" ];
 
-        # Pre-create /usr/local in the FHS image so bwrap can bind-mount onto it
+        # 1. Pre-create /usr/local so bwrap can bind-mount onto it
+        # 2. Point Nixpkgs's hardcoded C_INCLUDE_DIRS (/no-such-path) to /usr/include
         extraBuildCommands = ''
           mkdir -p $out/usr/local
+          ln -s /usr/include $out/no-such-path
         '';
 
         extraBwrapArgs = [
@@ -127,6 +156,7 @@
         targetPkgs = pkgs: with pkgs; [
           sudoShim
           lolInnerRunner
+          clangFhsPkg
 
           # Core build & script tools
           bash
@@ -160,17 +190,20 @@
           perl
           ruby
 
-          # Unwrapped Clang/LLVM + multilib GCC runtime (crtbeginS.o, libgcc.a, C++ headers) + Linux headers
-          llvmPackages.clang-unwrapped
-          llvmPackages.lld
-          llvmPackages.llvm
+          # Clang/LLVM + LLD + compiler-rt + multilib GCC runtime + Linux kernel headers
+          llvmPkgs.clang-unwrapped.lib
+          llvmPkgs.compiler-rt
+          llvmPkgs.lld
+          llvmPkgs.llvm
+          llvmPkgs.llvm.dev
+          llvmPkgs.llvm.lib
           binutils-unwrapped
           gcc_multi.cc
           gcc_multi.cc.lib
           glibc_multi
           linuxHeaders
 
-          # X11 / XCB / SHM development files (Nixpkgs 26.11 top-level names)
+          # X11 / XCB / SHM development files
           libx11
           libxcb
           libxext
@@ -191,7 +224,7 @@
           xcbutilwm
           xorgproto
 
-          # Graphics, Audio, FUSE, and Darling dependencies
+          # Graphics, Vulkan/SPIR-V (Indium/Metal), Audio, FUSE, and Darling dependencies
           fuse
           fuse3
           libcap
@@ -206,6 +239,10 @@
           libdrm
           vulkan-loader
           vulkan-headers
+          spirv-headers
+          spirv-tools
+          glslang
+          shaderc
           ocl-icd
           opencl-headers
           cairo
@@ -246,6 +283,7 @@
         multiPkgs = pkgs: with pkgs; [
           glibc
           gcc.cc.lib
+          llvmPkgs.compiler-rt
           zlib
           bzip2
           xz
