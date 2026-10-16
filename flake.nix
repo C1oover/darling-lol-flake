@@ -80,7 +80,17 @@
         export PATH="/usr/bin:/bin:/usr/local/bin:$PATH"
         export CC=/usr/bin/clang
         export CXX=/usr/bin/clang++
+        
+        # Explicitly point unwrapped Clang to GCC/Glibc library paths
+        export C_INCLUDE_PATH="/usr/include"
+        export CPLUS_INCLUDE_PATH="/usr/include/c++/${gccVersion}:/usr/include/c++/${gccVersion}/x86_64-unknown-linux-gnu:/usr/include"
+        export LIBRARY_PATH="/usr/lib/gcc/x86_64-unknown-linux-gnu/${gccVersion}:/usr/lib:/usr/lib32"
         export CMAKE_POLICY_VERSION_MINIMUM=3.5
+        
+        # Pass extra flags to Clang so it automatically locates crtbeginS.o and libgcc
+        export CFLAGS="--gcc-toolchain=${pkgs.gcc}"
+        export CXXFLAGS="--gcc-toolchain=${pkgs.gcc}"
+        export LDFLAGS="-B/usr/lib/gcc/x86_64-unknown-linux-gnu/${gccVersion} -L/usr/lib"
 
         mkdir -p "$WORKDIR" /usr/local/bin /usr/local/libexec /usr/local/lib /usr/local/share
 
