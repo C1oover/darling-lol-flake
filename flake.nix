@@ -28,12 +28,14 @@
       clangUnwrappedFhsPkg = pkgs.runCommand "clang-unwrapped-fhs-${llvmPkgs.clang-unwrapped.version}" { } ''
         mkdir -p "$out/bin" "$out/lib/clang/${clangMajor}"
         
-        # Create a smart wrapper script for clang that automatically injects GCC paths
+        # Enhanced smart wrapper that explicitly injects GCC library paths and libgcc search paths
         cat << 'EOF' > "$out/bin/clang"
         #!/bin/sh
         exec "${llvmPkgs.clang-unwrapped}/bin/clang" \
           --gcc-toolchain="${pkgs.gcc}" \
           -B"${pkgs.gcc.cc}/lib/gcc/x86_64-unknown-linux-gnu/${gccVersion}" \
+          -L"${pkgs.gcc.cc}/lib/gcc/x86_64-unknown-linux-gnu/${gccVersion}" \
+          -L"${pkgs.glibc}/lib" \
           -B"${pkgs.glibc}/lib" \
           "$@"
         EOF
@@ -44,6 +46,8 @@
         exec "${llvmPkgs.clang-unwrapped}/bin/clang++" \
           --gcc-toolchain="${pkgs.gcc}" \
           -B"${pkgs.gcc.cc}/lib/gcc/x86_64-unknown-linux-gnu/${gccVersion}" \
+          -L"${pkgs.gcc.cc}/lib/gcc/x86_64-unknown-linux-gnu/${gccVersion}" \
+          -L"${pkgs.glibc}/lib" \
           -B"${pkgs.glibc}/lib" \
           "$@"
         EOF
@@ -63,7 +67,6 @@
           ln -s "${llvmPkgs.compiler-rt}/lib" "$out/lib/clang/${clangMajor}/lib"
         fi
       '';
-
       gcc32Support = pkgs.runCommand "gcc-32-support-${gccVersion}" { } ''
         target_lib="$out/lib/gcc/x86_64-unknown-linux-gnu/${gccVersion}/32"
         mkdir -p "$target_lib"
