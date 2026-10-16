@@ -20,7 +20,25 @@
         hash = "sha256-xNwX3mzaDmOVlwLaqKAKj6SUP0TBjHa10fM/tiyHeXA=";
       };
 
+      llvmPkgs = pkgs.llvmPackages;
+      clangMajor = pkgs.lib.versions.major llvmPkgs.clang-unwrapped.version;
       gccVersion = pkgs.lib.getVersion pkgs.gcc;
+
+      # Create a clean unwrapped Clang environment in /usr/bin to bypass cc-wrapper multi-target blocks
+      clangFhsPkg = pkgs.runCommand "clang-unwrapped-fhs-${llvmPkgs.clang-unwrapped.version}" { } ''
+        mkdir -p "$out/bin" "$out/lib/clang/${clangMajor}"
+        for f in ${llvmPkgs.clang-unwrapped}/bin/*; do
+          ln -s "$f" "$out/bin/$(basename "$f")"
+        done
+        for f in ${llvmPkgs.lld}/bin/*; do
+          ln -sf "$f" "$out/bin/$(basename "$f")"
+        done
+        ln -s "${llvmPkgs.clang-unwrapped.lib}/lib/clang/${clangMajor}/include" \
+          "$out/lib/clang/${clangMajor}/include"
+        if [ -d "${llvmPkgs.compiler-rt}/lib" ]; then
+          ln -s "${llvmPkgs.compiler-rt}/lib" "$out/lib/clang/${clangMajor}/lib"
+        fi
+      '';
 
       gcc32Support = pkgs.runCommand "gcc-32-support-${gccVersion}" { } ''
         target_lib="$out/lib/gcc/x86_64-unknown-linux-gnu/${gccVersion}/32"
@@ -59,9 +77,9 @@
         STAMP_FILE="$WORKDIR/.nix-source-stamp"
         CURRENT_SRC="${darlingLolSrc}"
 
-        export PATH="/usr/local/bin:$PATH"
-        export CC=clang
-        export CXX=clang++
+        export PATH="/usr/bin:/bin:/usr/local/bin:$PATH"
+        export CC=/usr/bin/clang
+        export CXX=/usr/bin/clang++
         export CMAKE_POLICY_VERSION_MINIMUM=3.5
 
         mkdir -p "$WORKDIR" /usr/local/bin /usr/local/libexec /usr/local/lib /usr/local/share
@@ -75,8 +93,8 @@
         cd "$WORKDIR"
 
         if [ ! -d "/usr/local/libexec/darling" ] || [ ! -x "/usr/local/bin/darling" ]; then
-          echo "[lol-darling] Verifying Clang toolchain..."
-          clang --version >/dev/null
+          echo "[lol-darling] Verifying Unwrapped Clang toolchain..."
+          /usr/bin/clang --version >/dev/null
           echo "[lol-darling] Toolchain check passed."
 
           echo "[lol-darling] Building darling-lol runtime..."
@@ -95,7 +113,6 @@
 
           build/venv/bin/python3 scripts/configure.py --guest-user "$USER"
           
-          # Cap parallel jobs to prevent header generation race conditions in submodules
           export MAKEFLAGS="-j4"
           ./scripts/build.sh
           
@@ -151,6 +168,7 @@
           sudoShim
           lolInnerRunner
           gcc32Support
+          clangFhsPkg
 
           bash
           coreutils
@@ -186,10 +204,9 @@
           libmd
           libmd.dev
 
-          llvmPackages.clang
-          llvmPackages.lld
-          llvmPackages.llvm
-          llvmPackages.compiler-rt
+          llvmPkgs.clang-unwrapped.lib
+          llvmPkgs.compiler-rt
+          llvmPkgs.llvm
           binutils
           gcc
           glibc
@@ -276,7 +293,7 @@
           glibc
           glibc.dev
           gcc.cc.lib
-          llvmPackages.compiler-rt
+          llvmPkgs.compiler-rt
           zlib
           bzip2
           xz
