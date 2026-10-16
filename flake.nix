@@ -22,10 +22,8 @@
 
       llvmPkgs = pkgs.llvmPackages;
       clangMajor = pkgs.lib.versions.major llvmPkgs.clang-unwrapped.version;
-      gccVersion = pkgs.gcc.cc.version;
+      gccVersion = pkgs.lib.getVersion pkgs.gcc;
 
-      # Re-unites clang-unwrapped's binary (.out) with its builtin headers (.lib)
-      # and compiler-rt so realpath(/proc/self/exe) -> ../lib/clang/<major>/include works.
       clangFhsPkg = pkgs.runCommand "clang-fhs-${llvmPkgs.clang-unwrapped.version}" { } ''
         mkdir -p "$out/bin" "$out/lib/clang/${clangMajor}"
         for f in ${llvmPkgs.clang-unwrapped}/bin/*; do
@@ -39,8 +37,6 @@
         fi
       '';
 
-      # Provides /usr/lib/gcc/x86_64-unknown-linux-gnu/<ver>/32 and 32-bit C++ headers
-      # for `clang -m32` without pulling in glibc_multi (which clobbers 64-bit /usr/lib).
       gcc32Support = pkgs.runCommand "gcc-32-support-${gccVersion}" { } ''
         target_lib="$out/lib/gcc/x86_64-unknown-linux-gnu/${gccVersion}/32"
         mkdir -p "$target_lib"
@@ -89,7 +85,7 @@
 
         mkdir -p "$WORKDIR" /usr/local/bin /usr/local/libexec /usr/local/lib /usr/local/share
 
-        if [ ! -f "$STAMP_FILE" ] \vert{}\vert{} [ "$(cat "$STAMP_FILE")" != "$CURRENT_SRC" ]; then
+        if [ ! -f "$STAMP_FILE" ] || [ "$(cat "$STAMP_FILE")" != "$CURRENT_SRC" ]; then
           echo "[lol-darling] Syncing darling-lol repository to $WORKDIR..."
           rsync -r --no-g --no-o --chmod=u+rwX "$CURRENT_SRC/" "$WORKDIR/"
           echo "$CURRENT_SRC" > "$STAMP_FILE"
@@ -164,10 +160,12 @@
         extraOutputsToInstall = [ "dev" "lib" ];
 
         extraBuildCommands = ''
-          mkdir -p $out/usr/local
+          mkdir -p $out/usr/local $out/lib64
           ln -s /usr/include $out/no-such-path
-          if [ ! -e "$out/usr/lib/ld-linux.so.2" ] && [ -e "$out/usr/lib32/ld-linux.so.2" ]; then
-            ln -s /usr/lib32/ld-linux.so.2 $out/usr/lib/ld-linux.so.2
+          if [ -e "$out/usr/lib/ld-linux-x86-64.so.2" ]; then
+            ln -sf /usr/lib/ld-linux-x86-64.so.2 $out/lib64/ld-linux-x86-64.so.2
+          elif [ -e "$out/lib/ld-linux-x86-64.so.2" ]; then
+            ln -sf /lib/ld-linux-x86-64.so.2 $out/lib64/ld-linux-x86-64.so.2
           fi
         '';
 
@@ -181,7 +179,6 @@
           clangFhsPkg
           gcc32Support
 
-          # Core build & script tools
           bash
           coreutils
           findutils
@@ -213,7 +210,6 @@
           perl
           ruby
 
-          # 64-bit Clang/LLVM + standard 64-bit GCC/Glibc runtime + Linux kernel headers
           llvmPkgs.clang-unwrapped.lib
           llvmPkgs.compiler-rt
           llvmPkgs.lld
@@ -227,7 +223,6 @@
           glibc.dev
           linuxHeaders
 
-          # X11 / XCB / SHM development files
           libx11
           libxcb
           libxext
@@ -248,7 +243,6 @@
           xcbutilwm
           xorgproto
 
-          # Graphics, Vulkan/SPIR-V (Indium/Metal), Audio, FUSE, and Darling dependencies
           fuse
           fuse3
           libcap
