@@ -24,12 +24,13 @@
         fetchLFS = true;
       };
 
-      darling-lol = pkgs.darling.overrideAttrs (oldAttrs: {
+      # Built completely from scratch as stdenv.mkDerivation
+      darling-lol = pkgs.stdenv.mkDerivation {
         pname = "darling-lol";
         version = "0.1.0-unstable-2026-10-16";
         src = darlingLolSrc;
 
-        nativeBuildInputs = (oldAttrs.nativeBuildInputs or [ ]) ++ (with pkgs; [
+        nativeBuildInputs = with pkgs; [
           cmake
           ninja
           clang
@@ -39,9 +40,9 @@
           git
           git-lfs
           python3
-        ]);
+        ];
 
-        buildInputs = (oldAttrs.buildInputs or [ ]) ++ (with pkgs; [
+        buildInputs = with pkgs; [
           fuse
           libGL
           libGLU
@@ -68,13 +69,13 @@
           xorg.libXext
           xorg.libXrandr
           xorg.libxkbfile
-        ]);
+        ];
 
-        cmakeFlags = (oldAttrs.cmakeFlags or [ ]) ++ [
+        cmakeFlags = [
           "-DCOMPONENTS=stock"
           "-DGIT_LFS_AVAILABLE=ON"
         ];
-      });
+      };
 
       # Automated bootstrap, configuration, and launch script
       lolLauncherBin = pkgs.writeShellApplication {
@@ -92,19 +93,17 @@
         text = ''
           export DPREFIX="''${DPREFIX:-$HOME/.local/share/lol-darling}"
           CACHE_DIR="''${XDG_CACHE_HOME:-$HOME/.cache}/lol-darling"
-          LOL_REGION="''${LOL_REGION:-euw}" # e.g. euw, eune, na, kr, br, oce
+          LOL_REGION="''${LOL_REGION:-euw}"
           INSTALLER_URL="https://lol.secure.dyn.riotcdn.net/channels/public/x/installer/current/live.''${LOL_REGION}.zip"
           INSTALLER_ARCHIVE="$CACHE_DIR/live.''${LOL_REGION}.zip"
 
           mkdir -p "$DPREFIX" "$CACHE_DIR"
 
-          # 1. Initialize the Darling overlay prefix if not yet initialized
           if [ ! -d "$DPREFIX/Applications" ]; then
             echo "[lol-darling] Initializing Darling prefix at $DPREFIX..."
             darling shell /usr/bin/true
           fi
 
-          # Ensure required macOS directory hierarchy exists inside prefix & host ~/Library
           mkdir -p \
             "$DPREFIX/Applications" \
             "$DPREFIX/Users/Shared/Riot Games" \
@@ -113,7 +112,6 @@
             "$HOME/Library/Preferences" \
             "$HOME/Library/Logs/Riot Games"
 
-          # Helper function to pre-configure game.cfg for Darling compatibility
           configure_lol() {
             local cfg_dir="$DPREFIX/Applications/League of Legends.app/Contents/LoL/Config"
             local cfg_file="$cfg_dir/game.cfg"
@@ -133,7 +131,6 @@
             fi
           }
 
-          # 2. Auto-download and run the macOS Riot installer if League isn't installed yet
           if [ ! -d "$DPREFIX/Applications/League of Legends.app" ] && \
              [ ! -d "$DPREFIX/Users/Shared/Riot Games/Riot Client.app" ]; then
             echo "[lol-darling] League of Legends not found in prefix. Starting auto-installer..."
@@ -150,7 +147,6 @@
             echo "[lol-darling] Extracting installer archive..."
             unzip -q -o "$INSTALLER_ARCHIVE" -d "$TMP_EXTRACT" || 7z x "$INSTALLER_ARCHIVE" -o"$TMP_EXTRACT" -y
 
-            # Handle either direct .app inside .zip or nested .dmg
             DMG_FILE="$(find "$TMP_EXTRACT" -maxdepth 2 -name "*.dmg" | head -n 1 || true)"
             if [ -n "$DMG_FILE" ]; then
               7z x "$DMG_FILE" -o"$TMP_EXTRACT/dmg_out" -y
@@ -172,7 +168,6 @@
             darling shell "/Applications/Install League of Legends.app/Contents/MacOS/Install League of Legends"
           fi
 
-          # 3. Apply configuration and launch League via Riot Client Services
           configure_lol
 
           if [ -d "$DPREFIX/Users/Shared/Riot Games/Riot Client.app" ]; then
@@ -221,10 +216,8 @@
 
       nixosModules.default = {
         nixpkgs.overlays = [ self.overlays.default ];
-        programs.darling = {
-          enable = true;
-          package = darling-lol;
-        };
+        # Allow FUSE user mounting required by darlingserver containers
+        programs.fuse.userAllowOther = true;
       };
     };
 }
