@@ -18,8 +18,8 @@
       darlingLolSrc = pkgs.fetchFromGitHub {
         owner = "lucannez64";
         repo = "darling-lol";
-        rev = "HEAD";
-        hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        rev = "68f816deaf2ddcbf5cd557b0847ab32eeb0177cb";
+        hash = "sha256-y0HrjyV67+ug/ExrAuli9QlxfPnjyEsIsU5fQpK/yro=";
         fetchSubmodules = true;
         fetchLFS = true;
       };
