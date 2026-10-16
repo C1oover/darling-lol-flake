@@ -160,12 +160,10 @@
         extraOutputsToInstall = [ "dev" "lib" ];
 
         extraBuildCommands = ''
-          mkdir -p $out/usr/local $out/lib64
+          mkdir -p $out/usr/local
           ln -s /usr/include $out/no-such-path
-          if [ -e "$out/usr/lib/ld-linux-x86-64.so.2" ]; then
+          if [ -e "$out/usr/lib/ld-linux-x86-64.so.2" ] && [ ! -e "$out/lib64/ld-linux-x86-64.so.2" ]; then
             ln -sf /usr/lib/ld-linux-x86-64.so.2 $out/lib64/ld-linux-x86-64.so.2
-          elif [ -e "$out/lib/ld-linux-x86-64.so.2" ]; then
-            ln -sf /lib/ld-linux-x86-64.so.2 $out/lib64/ld-linux-x86-64.so.2
           fi
         '';
 
