@@ -1,5 +1,5 @@
 {
-  description = "Nix flake for macOS League of Legends on Linux via darling-lol with auto-install";
+  description = "Nix flake for macOS League of Legends on Linux via darling-lol";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -13,176 +13,260 @@
         config.allowUnfree = true;
       };
 
-      # Run `nix-prefetch-git --url https://github.com/lucannez64/darling-lol --fetch-submodules --fetch-lfs`
-      # and replace `rev` and `hash` below.
+      # Source of lucannez64/darling-lol (scripts, patches, and upstream manifest)
       darlingLolSrc = pkgs.fetchFromGitHub {
         owner = "lucannez64";
         repo = "darling-lol";
         rev = "68f816deaf2ddcbf5cd557b0847ab32eeb0177cb";
         hash = "sha256-y0HrjyV67+ug/ExrAuli9QlxfPnjyEsIsU5fQpK/yro=";
-        fetchSubmodules = true;
-        fetchLFS = true;
       };
 
-      # Built completely from scratch as stdenv.mkDerivation
-      darling-lol = pkgs.stdenv.mkDerivation {
-        pname = "darling-lol";
-        version = "0.1.0-unstable-2026-10-16";
-        src = darlingLolSrc;
+      #Inside buildFHSEnv (bubblewrap), PR_SET_NO_NEW_PRIVS blocks setuid sudo.
+      # Because /usr/local is bind-mounted to a user-owned directory, a shim lets
+      # darling-lol's `sudo cmake --install` and `install-runtime.sh` succeed cleanly.
+      sudoShim = pkgs.writeShellScriptBin "sudo" ''
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            -E|-H|-n|-s) shift ;;
+            -u|-g) shift 2 ;;
+            --) shift; break ;;
+            -*) shift ;;
+            *) break ;;
+          esac
+        done
+        exec "$@"
+      '';
 
-        nativeBuildInputs = with pkgs; [
-          cmake
-          ninja
-          clang
-          bison
-          flex
-          pkg-config
+      # Inner runner executed inside the FHS environment
+      lolInnerRunner = pkgs.writeShellScriptBin "lol-darling-inner" ''
+        set -euo pipefail
+
+        STATE_DIR="''${XDG_DATA_HOME:-$HOME/.local/share}/darling-lol"
+        WORKDIR="$STATE_DIR/workdir"
+        STAMP_FILE="$WORKDIR/.nix-source-stamp"
+        CURRENT_SRC="${darlingLolSrc}"
+
+        export PATH="/usr/local/bin:$PATH"
+        export CC=clang
+        export CXX=clang++
+
+        mkdir -p "$WORKDIR" /usr/local/bin /usr/local/libexec /usr/local/lib /usr/local/share
+
+        # 1. Sync darling-lol scripts/patches into writable workdir
+        if [ ! -f "$STAMP_FILE" ] \vert{}\vert{} [ "$(cat "$STAMP_FILE")" != "$CURRENT_SRC" ]; then
+          echo "[lol-darling] Syncing darling-lol repository to $WORKDIR..."
+          rsync -a --chmod=u+rwX "$CURRENT_SRC/" "$WORKDIR/"
+          echo "$CURRENT_SRC" > "$STAMP_FILE"
+        fi
+
+        cd "$WORKDIR"
+
+        # 2. First-time build & runtime installation
+        if [ ! -d "/usr/local/libexec/darling" ] || [ ! -x "/usr/local/bin/darling" ]; then
+          echo "[lol-darling] Building darling-lol runtime (first run - requires ~50GB free space)..."
+          if [ ! -d "build/venv" ]; then
+            python3 -m venv build/venv
+          fi
+          build/venv/bin/pip install --upgrade pip
+          build/venv/bin/pip install -r requirements.txt
+
+          build/venv/bin/python3 scripts/configure.py --guest-user "$USER"
+          ./scripts/build.sh
+          cmake --install build/darling-src/build --prefix /usr/local
+          ./scripts/install-runtime.sh
+        fi
+
+        # 3. Subcommands for manual maintenance (`lol-darling update`, `lol-darling shell`, etc.)
+        case "''${1:-run}" in
+          update)
+            shift
+            exec ./scripts/update.sh "$@"
+            ;;
+          install)
+            shift
+            REGION="''${1:-''${RCLOL_REGION:-euw}}"
+            REGION_LOWER="$(echo "$REGION" | tr '[:upper:]' '[:lower:]')"
+            exec ./scripts/installer.sh "$REGION_LOWER"
+            ;;
+          shell)
+            shift
+            exec bash "$@"
+            ;;
+          run|*)
+            # 4. Auto-run Riot installer if League/Riot Client isn't installed in ~/.darling yet
+            if [ ! -d "$HOME/.darling/Applications/League of Legends.app" ] && \
+               [ ! -d "$HOME/.darling/Users/Shared/Riot Games/Riot Client.app" ]; then
+              REGION_LOWER="$(echo "''${RCLOL_REGION:-euw}" | tr '[:upper:]' '[:lower:]')"
+              echo "[lol-darling] Riot/League not found in ~/.darling. Running installer for '$REGION_LOWER'..."
+              ./scripts/installer.sh "$REGION_LOWER"
+            fi
+
+            export RCLOL_REGION="''${RCLOL_REGION:-EUW}"
+            export RCLOL_LOCALE="''${RCLOL_LOCALE:-en_GB}"
+            exec ./scripts/run.sh "$@"
+            ;;
+        esac
+      '';
+
+      # FHS environment providing all 64-bit & 32-bit headers/libs required by Darling & LoL
+      lolFhsEnv = pkgs.buildFHSEnv {
+        name = "lol-darling-fhs";
+
+        targetPkgs = pkgs: with pkgs; [
+          sudoShim
+          lolInnerRunner
+
+          # Core build & script tools required by darling-lol README
+          bash
+          coreutils
+          findutils
+          gnugrep
+          gnused
+          gawk
+          diffutils
+          patch
+          rsync
+          file
+          which
+          procps
+          util-linux
           git
           git-lfs
+          curl
+          unzip
+          p7zip
+          cmake
+          gnumake
+          ninja
+          pkg-config
+          bison
+          flex
           python3
-        ];
+          python3Packages.pip
+          python3Packages.virtualenv
+          nodejs
 
-        buildInputs = with pkgs; [
+          # LLVM/Clang + LLD + LLVM dev files + multilib toolchain
+          clang
+          lld
+          llvm
+          libclang
+          glibc_multi
+          gcc_multi
+
+          # X11 / XCB / SHM development files (Nixpkgs 26.11 top-level names)
+          libx11
+          libxcb
+          libxext
+          libxrandr
+          libxcursor
+          libxkbfile
+          libxrender
+          libxfixes
+          libxi
+          libxcomposite
+          libxdamage
+          libxshmfence
+          libxkbcommon
+          xcbutil
+          xcbutilimage
+          xcbutilkeysyms
+          xcbutilrenderutil
+          xcbutilwm
+          xorgproto
+
+          # Graphics, Audio, FUSE, and Darling system dependencies
           fuse
+          fuse3
+          libcap
+          attr
+          acl
           libGL
           libGLU
           libglvnd
           mesa
           vulkan-loader
+          vulkan-headers
+          ocl-icd
+          opencl-headers
           cairo
           freetype
           fontconfig
+          harfbuzz
+          pango
           libtiff
           libjpeg
           giflib
+          libpng
+          libwebp
           libxml2
+          libxslt
+          sqlite
+          openssl
+          zlib
+          bzip2
+          xz
+          zstd
+          lz4
           libbsd
           elfutils
+          libunwind
           systemd
           dbus
           libpulseaudio
+          alsa-lib
           ffmpeg
           icu
-          libxkbcommon
-          xorg.libX11
-          xorg.libXcursor
-          xorg.libXext
-          xorg.libXrandr
-          xorg.libxkbfile
+          xdg-user-dirs
         ];
 
-        cmakeFlags = [
-          "-DCOMPONENTS=stock"
-          "-DGIT_LFS_AVAILABLE=ON"
+        multiPkgs = pkgs: with pkgs; [
+          glibc
+          zlib
+          freetype
+          fontconfig
+          libGL
+          libGLU
+          libglvnd
+          mesa
+          vulkan-loader
+          libpulseaudio
+          alsa-lib
+          libx11
+          libxcb
+          libxext
+          libxrandr
+          libxcursor
+          libxrender
+          libxfixes
+          libxi
+          libxshmfence
+          libjpeg
+          libpng
+          libtiff
+          giflib
+          libxml2
+          dbus
         ];
+
+        # Bind-mount persistent user-owned directory to /usr/local inside the FHS container
+        extraBwrapArgs = [
+          "--bind" "$HOME/.local/share/darling-lol/usr-local" "/usr/local"
+        ];
+
+        runScript = "lol-darling-inner";
       };
 
-      # Automated bootstrap, configuration, and launch script
+      # Outer wrapper that ensures bind-mount targets exist before bwrap starts
       lolLauncherBin = pkgs.writeShellApplication {
         name = "lol-darling";
-        runtimeInputs = with pkgs; [
-          darling-lol
-          curl
-          unzip
-          p7zip
-          coreutils
-          findutils
-          gnugrep
-          gnused
-        ];
+        runtimeInputs = [ pkgs.coreutils lolFhsEnv ];
         text = ''
-          export DPREFIX="''${DPREFIX:-$HOME/.local/share/lol-darling}"
-          CACHE_DIR="''${XDG_CACHE_HOME:-$HOME/.cache}/lol-darling"
-          LOL_REGION="''${LOL_REGION:-euw}"
-          INSTALLER_URL="https://lol.secure.dyn.riotcdn.net/channels/public/x/installer/current/live.''${LOL_REGION}.zip"
-          INSTALLER_ARCHIVE="$CACHE_DIR/live.''${LOL_REGION}.zip"
-
-          mkdir -p "$DPREFIX" "$CACHE_DIR"
-
-          if [ ! -d "$DPREFIX/Applications" ]; then
-            echo "[lol-darling] Initializing Darling prefix at $DPREFIX..."
-            darling shell /usr/bin/true
-          fi
-
           mkdir -p \
-            "$DPREFIX/Applications" \
-            "$DPREFIX/Users/Shared/Riot Games" \
-            "$HOME/Library/Application Support/Riot Games" \
-            "$HOME/Library/Application Support/League of Legends" \
-            "$HOME/Library/Preferences" \
-            "$HOME/Library/Logs/Riot Games"
-
-          configure_lol() {
-            local cfg_dir="$DPREFIX/Applications/League of Legends.app/Contents/LoL/Config"
-            local cfg_file="$cfg_dir/game.cfg"
-            mkdir -p "$cfg_dir"
-
-            if [ ! -f "$cfg_file" ]; then
-              cat > "$cfg_file" <<EOF
-          [General]
-          WindowMode=2
-          WaitForVerticalSync=0
-          enable_shader_cache=1
-          PreferOpenGL=1
-          MetalBetaTest=0
-          DX11BetaTest=0
-          EOF
-              echo "[lol-darling] Wrote default Darling-compatible game.cfg"
-            fi
-          }
-
-          if [ ! -d "$DPREFIX/Applications/League of Legends.app" ] && \
-             [ ! -d "$DPREFIX/Users/Shared/Riot Games/Riot Client.app" ]; then
-            echo "[lol-darling] League of Legends not found in prefix. Starting auto-installer..."
-
-            if [ ! -f "$INSTALLER_ARCHIVE" ]; then
-              echo "[lol-darling] Downloading macOS installer for region '$LOL_REGION'..."
-              curl -fL --retry 3 -o "$INSTALLER_ARCHIVE.part" "$INSTALLER_URL"
-              mv "$INSTALLER_ARCHIVE.part" "$INSTALLER_ARCHIVE"
-            fi
-
-            TMP_EXTRACT="$(mktemp -d "$CACHE_DIR/extract.XXXXXX")"
-            trap 'rm -rf "$TMP_EXTRACT"' EXIT
-
-            echo "[lol-darling] Extracting installer archive..."
-            unzip -q -o "$INSTALLER_ARCHIVE" -d "$TMP_EXTRACT" || 7z x "$INSTALLER_ARCHIVE" -o"$TMP_EXTRACT" -y
-
-            DMG_FILE="$(find "$TMP_EXTRACT" -maxdepth 2 -name "*.dmg" | head -n 1 || true)"
-            if [ -n "$DMG_FILE" ]; then
-              7z x "$DMG_FILE" -o"$TMP_EXTRACT/dmg_out" -y
-            fi
-
-            INSTALLER_APP="$(find "$TMP_EXTRACT" -name "Install League of Legends*.app" -type d | head -n 1)"
-            if [ -z "$INSTALLER_APP" ]; then
-              echo "[lol-darling] Error: Could not locate 'Install League of Legends.app' in archive." >&2
-              exit 1
-            fi
-
-            rm -rf "$DPREFIX/Applications/Install League of Legends.app"
-            cp -a "$INSTALLER_APP" "$DPREFIX/Applications/Install League of Legends.app"
-            chmod -R u+rwX "$DPREFIX/Applications/Install League of Legends.app"
-
-            configure_lol
-
-            echo "[lol-darling] Launching macOS Riot Installer inside Darling..."
-            darling shell "/Applications/Install League of Legends.app/Contents/MacOS/Install League of Legends"
-          fi
-
-          configure_lol
-
-          if [ -d "$DPREFIX/Users/Shared/Riot Games/Riot Client.app" ]; then
-            echo "[lol-darling] Launching League of Legends via Riot Client..."
-            exec darling shell \
-              "/Users/Shared/Riot Games/Riot Client.app/Contents/MacOS/RiotClientServices" \
-              --launch-product=league_of_legends \
-              --launch-patchline=live \
-              "$@"
-          else
-            echo "[lol-darling] Launching LeagueClient bundle directly..."
-            exec darling shell \
-              "/Applications/League of Legends.app/Contents/MacOS/LeagueClient" \
-              "$@"
-          fi
+            "$HOME/.local/share/darling-lol/usr-local" \
+            "$HOME/.local/share/darling-lol/workdir" \
+            "$HOME/.darling"
+          exec lol-darling-fhs "$@"
         '';
       };
 
@@ -190,10 +274,10 @@
         name = "lol-darling";
         desktopName = "League of Legends (Darling)";
         comment = "Play the macOS version of League of Legends on Linux via darling-lol";
-        exec = "lol-darling %U";
+        exec = "lol-darling";
         icon = "applications-games";
         categories = [ "Game" ];
-        terminal = false;
+        terminal = true;
       };
 
       lol-darling = pkgs.symlinkJoin {
@@ -206,17 +290,16 @@
 
     in {
       packages.${system} = {
-        inherit darling-lol lol-darling;
+        inherit lol-darling;
         default = lol-darling;
       };
 
       overlays.default = final: prev: {
-        inherit darling-lol lol-darling;
+        inherit lol-darling;
       };
 
       nixosModules.default = {
         nixpkgs.overlays = [ self.overlays.default ];
-        # Allow FUSE user mounting required by darlingserver containers
         programs.fuse.userAllowOther = true;
       };
     };
