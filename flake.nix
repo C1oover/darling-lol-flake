@@ -119,7 +119,7 @@
 
         mkdir -p "$WORKDIR" /usr/local/bin /usr/local/libexec /usr/local/lib /usr/local/share
 
-        # Completely wipe workdir on stamp change or corruption to ensure a pristine git repo for patching
+        # Completely wipe workdir on stamp change to ensure a pristine state
         if [ ! -f "$STAMP_FILE" ] || [ "$(cat "$STAMP_FILE")" != "$CURRENT_SRC" ]; then
           echo "[lol-darling] Syncing fresh darling-lol repository to $WORKDIR..."
           rm -rf "$WORKDIR"
@@ -142,9 +142,10 @@
           build/venv/bin/pip install --upgrade pip
           build/venv/bin/pip install -r requirements.txt
 
+          # Configure sets up submodules and applies patches first
           build/venv/bin/python3 scripts/configure.py --guest-user "$USER"
 
-          # Neutralize shutdown-user.sh AFTER configure/patch step has initialized the submodule workdir
+          # Neutralize shutdown-user.sh AFTER configuration and patch application are done
           find . -name "shutdown-user.sh" -type f 2>/dev/null | while read -r script; do
             echo "[lol-darling] Neutralizing root check in $script..."
             cat << 'EOF' > "$script"
