@@ -154,7 +154,7 @@
         esac
       '';
 
-lolFhsEnv = pkgs.buildFHSEnv {
+      lolFhsEnv = pkgs.buildFHSEnv {
         name = "lol-darling-fhs";
 
         extraOutputsToInstall = [ "dev" "lib" ];
@@ -168,17 +168,6 @@ lolFhsEnv = pkgs.buildFHSEnv {
           "--bind" "$HOME/.local/share/darling-lol/usr-local" "/usr/local"
           "--ro-bind" "${pkgs.glibc}/lib/ld-linux-x86-64.so.2" "/lib64/ld-linux-x86-64.so.2"
         ];
-
-        targetPkgs = pkgs: with pkgs; [
-          # ... (keep all your existing targetPkgs from the previous version)
-        ];
-
-        multiPkgs = pkgs: with pkgs; [
-          # ... (keep all your existing multiPkgs from the previous version)
-        ];
-
-        runScript = "lol-darling-inner";
-      };
 
         targetPkgs = pkgs: with pkgs; [
           sudoShim
