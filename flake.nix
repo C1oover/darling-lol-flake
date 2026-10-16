@@ -89,12 +89,27 @@
       '';
 
       sudoShim = pkgs.writeShellScriptBin "sudo" ''
-        # If running as root, just execute the command
+        # If the script being called is shutdown-user.sh or similar, fake root success or execute directly
+        for arg in "$@"; do
+          case "$arg" in
+            *shutdown-user.sh* | *darlingserver* | *darling-init*)
+              # Force execution bypassing the root check loop
+              shift
+              # Find and execute the actual script argument
+              for subarg in "$@"; do
+                if [ -f "$subarg" ]; then
+                  exec "$subarg"
+                fi
+              done
+              exec "$@"
+              ;;
+          esac
+        done
+
         if [ "$(id -u)" = "0" ]; then
           exec "$@"
         fi
         
-        # Otherwise, strip sudo-specific flags and execute the payload
         while [ $# -gt 0 ]; do
           case "$1" in
             -E|-H|-n|-s|-i|-A) shift ;;
