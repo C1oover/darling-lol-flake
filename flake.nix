@@ -119,6 +119,15 @@
 
         mkdir -p "$WORKDIR" /usr/local/bin /usr/local/libexec /usr/local/lib /usr/local/share
 
+        # Clean git state if workdir is already initialized to avoid patch application failures
+        if [ -d "$WORKDIR/.git" ]; then
+          echo "[lol-darling] Resetting dirty git workspace..."
+          cd "$WORKDIR"
+          git reset --hard HEAD
+          git clean -fdx
+          cd - >/dev/null
+        fi
+
         if [ ! -f "$STAMP_FILE" ] || [ "$(cat "$STAMP_FILE")" != "$CURRENT_SRC" ]; then
           echo "[lol-darling] Syncing darling-lol repository to $WORKDIR..."
           rsync -r --no-g --no-o --chmod=u+rwX "$CURRENT_SRC/" "$WORKDIR/"
@@ -127,7 +136,7 @@
 
         cd "$WORKDIR"
 
-        # Aggressively neutralize all shutdown-user.sh scripts to prevent sudo loops
+        # Neutralize all shutdown-user.sh scripts to prevent sudo loops
         find . -name "shutdown-user.sh" -type f 2>/dev/null | while read -r script; do
           echo "[lol-darling] Neutralizing root check in $script..."
           cat << 'EOF' > "$script"
