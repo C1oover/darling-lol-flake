@@ -24,15 +24,21 @@
       clangMajor = pkgs.lib.versions.major llvmPkgs.clang-unwrapped.version;
       gccVersion = pkgs.lib.getVersion pkgs.gcc;
 
-      # Create a clean unwrapped Clang environment in /usr/bin to bypass cc-wrapper multi-target blocks
-      clangFhsPkg = pkgs.runCommand "clang-unwrapped-fhs-${llvmPkgs.clang-unwrapped.version}" { } ''
+      # Completely unwrapped Clang/LLD package to bypass cc-wrapper flag injection
+      clangUnwrappedFhsPkg = pkgs.runCommand "clang-unwrapped-fhs-${llvmPkgs.clang-unwrapped.version}" { } ''
         mkdir -p "$out/bin" "$out/lib/clang/${clangMajor}"
-        for f in ${llvmPkgs.clang-unwrapped}/bin/*; do
+        
+        # Symlink raw unwrapped clang binaries
+        ln -s "${llvmPkgs.clang-unwrapped}/bin/clang" "$out/bin/clang"
+        ln -s "${llvmPkgs.clang-unwrapped}/bin/clang++" "$out/bin/clang++"
+        ln -s "${llvmPkgs.clang-unwrapped}/bin/clang-${clangMajor}" "$out/bin/clang-${clangMajor}"
+        
+        # Symlink lld linkers
+        for f in ${llvmPkgs.lld}/bin/*; do
           ln -s "$f" "$out/bin/$(basename "$f")"
         done
-        for f in ${llvmPkgs.lld}/bin/*; do
-          ln -sf "$f" "$out/bin/$(basename "$f")"
-        done
+
+        # Include builtin compiler resource headers & libraries
         ln -s "${llvmPkgs.clang-unwrapped.lib}/lib/clang/${clangMajor}/include" \
           "$out/lib/clang/${clangMajor}/include"
         if [ -d "${llvmPkgs.compiler-rt}/lib" ]; then
@@ -78,8 +84,8 @@
         CURRENT_SRC="${darlingLolSrc}"
 
         export PATH="/usr/bin:/bin:/usr/local/bin:$PATH"
-        export CC=clang
-        export CXX=clang++
+        export CC=/usr/bin/clang
+        export CXX=/usr/bin/clang++
         export CMAKE_POLICY_VERSION_MINIMUM=3.5
 
         mkdir -p "$WORKDIR" /usr/local/bin /usr/local/libexec /usr/local/lib /usr/local/share
@@ -93,8 +99,8 @@
         cd "$WORKDIR"
 
         if [ ! -d "/usr/local/libexec/darling" ] || [ ! -x "/usr/local/bin/darling" ]; then
-          echo "[lol-darling] Verifying Clang toolchain..."
-          clang --version >/dev/null
+          echo "[lol-darling] Verifying Unwrapped Clang toolchain..."
+          /usr/bin/clang --version >/dev/null
           echo "[lol-darling] Toolchain check passed."
 
           echo "[lol-darling] Building darling-lol runtime..."
@@ -110,9 +116,6 @@
             echo "[lol-darling] Removing incomplete CMake cache before re-configuring..."
             rm -rf build/darling-src/build/CMakeCache.txt build/darling-src/build/CMakeFiles
           fi
-
-          # Pass explicit Nix compiler and linker flags to CMake configuration
-          export CMAKE_ARGS="-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_FLAGS='-isystem /usr/include -B/usr/lib' -DCMAKE_CXX_FLAGS='-isystem /usr/include -B/usr/lib'"
 
           build/venv/bin/python3 scripts/configure.py --guest-user "$USER"
           
@@ -171,6 +174,7 @@
           sudoShim
           lolInnerRunner
           gcc32Support
+          clangUnwrappedFhsPkg
 
           bash
           coreutils
@@ -206,16 +210,89 @@
           libmd
           libmd.dev
 
-          clang
-          lld
-          llvm
-          llvmPackages.compiler-rt
+          llvmPkgs.clang-unwrapped.lib
+          llvmPkgs.compiler-rt
+          llvmPkgs.llvm
           binutils
           gcc
           glibc
           glibc.dev
           linuxHeaders
-          # ... rest of packages ...
+
+          libx11
+          libxcb
+          libxext
+          libxrandr
+          libxcursor
+          libxkbfile
+          libxrender
+          libxfixes
+          libxi
+          libxcomposite
+          libxdamage
+          libxshmfence
+          libxkbcommon
+          xcbutil
+          xcbutilimage
+          xcbutilkeysyms
+          xcbutilrenderutil
+          xcbutilwm
+          xorgproto
+
+          fuse
+          fuse3
+          libcap
+          attr
+          acl
+          libffi
+          libarchive
+          glib
+          libGL
+          libGLU
+          libglvnd
+          mesa
+          libdrm
+          vulkan-loader
+          vulkan-headers
+          spirv-headers
+          spirv-tools
+          glslang
+          shaderc
+          ocl-icd
+          opencl-headers
+          cairo
+          freetype
+          fontconfig
+          harfbuzz
+          pango
+          libtiff
+          libjpeg
+          giflib
+          libpng
+          libwebp
+          libxml2
+          libxslt
+          sqlite
+          openssl
+          zlib
+          bzip2
+          xz
+          zstd
+          lz4
+          libbsd
+          elfutils
+          libunwind
+          systemd
+          dbus
+          libpulseaudio
+          alsa-lib
+          libvorbis
+          libogg
+          flac
+          libsndfile
+          ffmpeg
+          icu
+          xdg-user-dirs
         ];
 
         multiPkgs = pkgs: with pkgs; [
