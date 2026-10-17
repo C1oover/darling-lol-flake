@@ -87,8 +87,9 @@
           "$target_inc/32"
       '';
 
-      # Preload shim v2: grants full CAP_SYS_ADMIN inside nested user namespaces for all unshare() calls
-      darlingNosuidLib = pkgs.runCommandCC "darling-nosuid-lib-v2" { } ''
+      # Preload shim v3: maps host UID/GID -> 0 in the new user namespace and reports UID/EUID 0 consistently
+      # so darlingserver natively starts as root (UID 0) inside the namespace even if LD_PRELOAD is cleared.
+      darlingNosuidLib = pkgs.runCommandCC "darling-nosuid-lib-v3" { } ''
         mkdir -p "$out/lib"
         cat << 'EOF' > nosuid.c
         #define _GNU_SOURCE
@@ -103,51 +104,21 @@
         #include <sys/types.h>
         #include <unistd.h>
 
-        static uid_t (*real_geteuid)(void) = NULL;
         static uid_t (*real_getuid)(void) = NULL;
         static gid_t (*real_getgid)(void) = NULL;
-        static gid_t (*real_getegid)(void) = NULL;
         static int (*real_unshare)(int) = NULL;
-
-        static uid_t saved_uid = 0;
-        static gid_t saved_gid = 0;
-        static int uid_saved = 0;
 
         __attribute__((constructor))
         static void init_syms(void) {
-          if (!real_geteuid) real_geteuid = dlsym(RTLD_NEXT, "geteuid");
           if (!real_getuid) real_getuid = dlsym(RTLD_NEXT, "getuid");
           if (!real_getgid) real_getgid = dlsym(RTLD_NEXT, "getgid");
-          if (!real_getegid) real_getegid = dlsym(RTLD_NEXT, "getegid");
           if (!real_unshare) real_unshare = dlsym(RTLD_NEXT, "unshare");
-          if (!uid_saved && real_getuid && real_getgid) {
-            const char *env_uid = getenv("DARLING_HOST_UID");
-            const char *env_gid = getenv("DARLING_HOST_GID");
-            saved_uid = env_uid ? (uid_t)atoi(env_uid) : real_getuid();
-            saved_gid = env_gid ? (gid_t)atoi(env_gid) : real_getgid();
-            uid_saved = 1;
-          }
         }
 
-        uid_t geteuid(void) {
-          init_syms();
-          return 0;
-        }
-
-        uid_t getuid(void) {
-          init_syms();
-          return saved_uid;
-        }
-
-        gid_t getgid(void) {
-          init_syms();
-          return saved_gid;
-        }
-
-        gid_t getegid(void) {
-          init_syms();
-          return saved_gid;
-        }
+        uid_t geteuid(void) { return 0; }
+        uid_t getuid(void) { return 0; }
+        gid_t getegid(void) { return 0; }
+        gid_t getgid(void) { return 0; }
 
         int setuid(uid_t uid) { (void)uid; return 0; }
         int seteuid(uid_t uid) { (void)uid; return 0; }
@@ -174,12 +145,10 @@
           uid_t cur_uid = real_getuid();
           gid_t cur_gid = real_getgid();
 
-          /* First try direct unshare in case we already entered a userns with CAP_SYS_ADMIN */
           if (real_unshare(flags) == 0) {
             return 0;
           }
 
-          /* If EPERM, attach CLONE_NEWUSER and map UID/GID 0 inside the namespace so we keep CAP_SYS_ADMIN */
           if (!(flags & CLONE_NEWUSER)) {
             int r = real_unshare(flags | CLONE_NEWUSER);
             if (r == 0) {
@@ -196,7 +165,7 @@
           return -1;
         }
         EOF
-        $CC -shared -fPIC -O2 nosuid.c -o "$out/lib/libdarling-nosuid-v2.so" -ldl
+        $CC -shared -fPIC -O2 nosuid.c -o "$out/lib/libdarling-nosuid-v3.so" -ldl
       '';
 
       # Intercepts shutdown-user.sh to prevent infinite sudo loops while keeping git clean
@@ -261,7 +230,7 @@
           git -C build/darling-src checkout -- tools/shutdown-user.sh 2>/dev/null || true
         fi
 
-        # Wrap /usr/local/bin/darling with our rootless namespace preload library v2
+        # Wrap /usr/local/bin/darling with our rootless namespace preload library v3
         wrap_darling_bin() {
           if [ -f "/usr/local/bin/darling" ] && [ ! -f "/usr/local/bin/darling.real" ]; then
             mv /usr/local/bin/darling /usr/local/bin/darling.real
@@ -269,9 +238,7 @@
           if [ -f "/usr/local/bin/darling.real" ]; then
             cat << 'EOF' > /usr/local/bin/darling
 #!/bin/sh
-export DARLING_HOST_UID="$(id -u)"
-export DARLING_HOST_GID="$(id -g)"
-export LD_PRELOAD="${darlingNosuidLib}/lib/libdarling-nosuid-v2.so''${LD_PRELOAD:+:$LD_PRELOAD}"
+export LD_PRELOAD="${darlingNosuidLib}/lib/libdarling-nosuid-v3.so''${LD_PRELOAD:+:$LD_PRELOAD}"
 exec /usr/local/bin/darling.real "$@"
 EOF
             chmod +x /usr/local/bin/darling
