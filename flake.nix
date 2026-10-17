@@ -87,6 +87,106 @@
           "$target_inc/32"
       '';
 
+      # Preload shim that allows /usr/local/bin/darling to run rootless inside bwrap
+      darlingNosuidLib = pkgs.runCommandCC "darling-nosuid-lib" { } ''
+        mkdir -p "$out/lib"
+        cat << 'EOF' > nosuid.c
+        #define _GNU_SOURCE
+        #include <dlfcn.h>
+        #include <fcntl.h>
+        #include <sched.h>
+        #include <stdio.h>
+        #include <stdlib.h>
+        #include <string.h>
+        #include <sys/stat.h>
+        #include <sys/types.h>
+        #include <unistd.h>
+
+        static uid_t (*real_geteuid)(void) = NULL;
+        static uid_t (*real_getuid)(void) = NULL;
+        static gid_t (*real_getgid)(void) = NULL;
+        static int (*real_unshare)(int) = NULL;
+
+        static void init_syms(void) {
+          if (!real_geteuid) real_geteuid = dlsym(RTLD_NEXT, "geteuid");
+          if (!real_getuid) real_getuid = dlsym(RTLD_NEXT, "getuid");
+          if (!real_getgid) real_getgid = dlsym(RTLD_NEXT, "getgid");
+          if (!real_unshare) real_unshare = dlsym(RTLD_NEXT, "unshare");
+        }
+
+        uid_t geteuid(void) {
+          init_syms();
+          return 0;
+        }
+
+        int setuid(uid_t uid) {
+          (void)uid;
+          return 0;
+        }
+
+        int seteuid(uid_t uid) {
+          (void)uid;
+          return 0;
+        }
+
+        int setresuid(uid_t ruid, uid_t euid, uid_t suid) {
+          (void)ruid; (void)euid; (void)suid;
+          return 0;
+        }
+
+        int setresgid(gid_t rgid, gid_t egid, gid_t sgid) {
+          (void)rgid; (void)egid; (void)sgid;
+          return 0;
+        }
+
+        int chown(const char *pathname, uid_t owner, gid_t group) {
+          (void)pathname; (void)owner; (void)group;
+          return 0;
+        }
+
+        int fchown(int fd, uid_t owner, gid_t group) {
+          (void)fd; (void)owner; (void)group;
+          return 0;
+        }
+
+        int lchown(const char *pathname, uid_t owner, gid_t group) {
+          (void)pathname; (void)owner; (void)group;
+          return 0;
+        }
+
+        static void write_file(const char *path, const char *content) {
+          int fd = open(path, O_WRONLY);
+          if (fd >= 0) {
+            ssize_t _w = write(fd, content, strlen(content));
+            (void)_w;
+            close(fd);
+          }
+        }
+
+        int unshare(int flags) {
+          init_syms();
+          uid_t orig_uid = real_getuid();
+          gid_t orig_gid = real_getgid();
+
+          /* If darling requests mount or PID namespaces, include CLONE_NEWUSER so unprivileged bwrap allows it */
+          if ((flags & (CLONE_NEWNS | CLONE_NEWPID)) && !(flags & CLONE_NEWUSER)) {
+            int r = real_unshare(flags | CLONE_NEWUSER);
+            if (r == 0) {
+              char buf[64];
+              write_file("/proc/self/setgroups", "deny");
+              snprintf(buf, sizeof(buf), "0 %u 1\n", orig_uid);
+              write_file("/proc/self/uid_map", buf);
+              snprintf(buf, sizeof(buf), "0 %u 1\n", orig_gid);
+              write_file("/proc/self/gid_map", buf);
+              return 0;
+            }
+          }
+          return real_unshare(flags);
+        }
+        EOF
+        $CC -shared -fPIC -O2 nosuid.c -o "$out/lib/libdarling-nosuid.so" -ldl
+      '';
+
       # Intercepts shutdown-user.sh to prevent infinite sudo loops while keeping git clean
       sudoShim = pkgs.writeShellScriptBin "sudo" ''
         for arg in "$@"; do
@@ -145,11 +245,23 @@
 
         cd "$WORKDIR"
 
-        # Restore tools/shutdown-user.sh in git so build.sh patch verification succeeds
-        # while preserving all compiled objects in build/darling-src/build
         if [ -d "build/darling-src/.git" ]; then
           git -C build/darling-src checkout -- tools/shutdown-user.sh 2>/dev/null || true
         fi
+
+        # Wrap /usr/local/bin/darling with our rootless namespace preload library
+        wrap_darling_bin() {
+          if [ -f "/usr/local/bin/darling" ] && ! grep -q "libdarling-nosuid.so" "/usr/local/bin/darling" 2>/dev/null; then
+            echo "[lol-darling] Wrapping /usr/local/bin/darling for rootless FHS execution..."
+            mv /usr/local/bin/darling /usr/local/bin/darling.real
+            cat << 'EOF' > /usr/local/bin/darling
+#!/bin/sh
+export LD_PRELOAD="${darlingNosuidLib}/lib/libdarling-nosuid.so''${LD_PRELOAD:+:$LD_PRELOAD}"
+exec /usr/local/bin/darling.real "$@"
+EOF
+            chmod +x /usr/local/bin/darling
+          fi
+        }
 
         if [ ! -d "/usr/local/libexec/darling" ] || [ ! -x "/usr/local/bin/darling" ]; then
           echo "[lol-darling] Verifying Smart Clang toolchain..."
@@ -169,7 +281,15 @@
           ./scripts/build.sh
           
           cmake --install build/darling-src/build --prefix /usr/local
+          wrap_darling_bin
           ./scripts/install-runtime.sh
+        else
+          wrap_darling_bin
+          # Ensure install-runtime.sh has completed if it failed on the setuid check previously
+          if [ ! -e "$HOME/.darling/usr" ] && [ ! -L "$HOME/.darling/system-root" ]; then
+            echo "[lol-darling] Finishing runtime setup..."
+            ./scripts/install-runtime.sh
+          fi
         fi
 
         case "''${1:-run}" in
@@ -222,6 +342,7 @@
           lolInnerRunner
           gcc32Support
           clangUnwrappedFhsPkg
+          darlingNosuidLib
 
           bash
           coreutils
