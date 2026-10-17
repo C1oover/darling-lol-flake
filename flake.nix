@@ -87,12 +87,13 @@
           "$target_inc/32"
       '';
 
-      # Preload shim that allows /usr/local/bin/darling to run rootless inside bwrap
-      darlingNosuidLib = pkgs.runCommandCC "darling-nosuid-lib" { } ''
+      # Preload shim v2: grants full CAP_SYS_ADMIN inside nested user namespaces for all unshare() calls
+      darlingNosuidLib = pkgs.runCommandCC "darling-nosuid-lib-v2" { } ''
         mkdir -p "$out/lib"
         cat << 'EOF' > nosuid.c
         #define _GNU_SOURCE
         #include <dlfcn.h>
+        #include <errno.h>
         #include <fcntl.h>
         #include <sched.h>
         #include <stdio.h>
@@ -105,13 +106,27 @@
         static uid_t (*real_geteuid)(void) = NULL;
         static uid_t (*real_getuid)(void) = NULL;
         static gid_t (*real_getgid)(void) = NULL;
+        static gid_t (*real_getegid)(void) = NULL;
         static int (*real_unshare)(int) = NULL;
 
+        static uid_t saved_uid = 0;
+        static gid_t saved_gid = 0;
+        static int uid_saved = 0;
+
+        __attribute__((constructor))
         static void init_syms(void) {
           if (!real_geteuid) real_geteuid = dlsym(RTLD_NEXT, "geteuid");
           if (!real_getuid) real_getuid = dlsym(RTLD_NEXT, "getuid");
           if (!real_getgid) real_getgid = dlsym(RTLD_NEXT, "getgid");
+          if (!real_getegid) real_getegid = dlsym(RTLD_NEXT, "getegid");
           if (!real_unshare) real_unshare = dlsym(RTLD_NEXT, "unshare");
+          if (!uid_saved && real_getuid && real_getgid) {
+            const char *env_uid = getenv("DARLING_HOST_UID");
+            const char *env_gid = getenv("DARLING_HOST_GID");
+            saved_uid = env_uid ? (uid_t)atoi(env_uid) : real_getuid();
+            saved_gid = env_gid ? (gid_t)atoi(env_gid) : real_getgid();
+            uid_saved = 1;
+          }
         }
 
         uid_t geteuid(void) {
@@ -119,42 +134,33 @@
           return 0;
         }
 
-        int setuid(uid_t uid) {
-          (void)uid;
-          return 0;
+        uid_t getuid(void) {
+          init_syms();
+          return saved_uid;
         }
 
-        int seteuid(uid_t uid) {
-          (void)uid;
-          return 0;
+        gid_t getgid(void) {
+          init_syms();
+          return saved_gid;
         }
 
-        int setresuid(uid_t ruid, uid_t euid, uid_t suid) {
-          (void)ruid; (void)euid; (void)suid;
-          return 0;
+        gid_t getegid(void) {
+          init_syms();
+          return saved_gid;
         }
 
-        int setresgid(gid_t rgid, gid_t egid, gid_t sgid) {
-          (void)rgid; (void)egid; (void)sgid;
-          return 0;
-        }
+        int setuid(uid_t uid) { (void)uid; return 0; }
+        int seteuid(uid_t uid) { (void)uid; return 0; }
+        int setgid(gid_t gid) { (void)gid; return 0; }
+        int setegid(gid_t gid) { (void)gid; return 0; }
+        int setresuid(uid_t r, uid_t e, uid_t s) { (void)r; (void)e; (void)s; return 0; }
+        int setresgid(gid_t r, gid_t e, gid_t s) { (void)r; (void)e; (void)s; return 0; }
+        int setgroups(size_t size, const gid_t *list) { (void)size; (void)list; return 0; }
+        int chown(const char *p, uid_t o, gid_t g) { (void)p; (void)o; (void)g; return 0; }
+        int fchown(int fd, uid_t o, gid_t g) { (void)fd; (void)o; (void)g; return 0; }
+        int lchown(const char *p, uid_t o, gid_t g) { (void)p; (void)o; (void)g; return 0; }
 
-        int chown(const char *pathname, uid_t owner, gid_t group) {
-          (void)pathname; (void)owner; (void)group;
-          return 0;
-        }
-
-        int fchown(int fd, uid_t owner, gid_t group) {
-          (void)fd; (void)owner; (void)group;
-          return 0;
-        }
-
-        int lchown(const char *pathname, uid_t owner, gid_t group) {
-          (void)pathname; (void)owner; (void)group;
-          return 0;
-        }
-
-        static void write_file(const char *path, const char *content) {
+        static void write_proc_file(const char *path, const char *content) {
           int fd = open(path, O_WRONLY);
           if (fd >= 0) {
             ssize_t _w = write(fd, content, strlen(content));
@@ -165,26 +171,32 @@
 
         int unshare(int flags) {
           init_syms();
-          uid_t orig_uid = real_getuid();
-          gid_t orig_gid = real_getgid();
+          uid_t cur_uid = real_getuid();
+          gid_t cur_gid = real_getgid();
 
-          /* If darling requests mount or PID namespaces, include CLONE_NEWUSER so unprivileged bwrap allows it */
-          if ((flags & (CLONE_NEWNS | CLONE_NEWPID)) && !(flags & CLONE_NEWUSER)) {
+          /* First try direct unshare in case we already entered a userns with CAP_SYS_ADMIN */
+          if (real_unshare(flags) == 0) {
+            return 0;
+          }
+
+          /* If EPERM, attach CLONE_NEWUSER and map UID/GID 0 inside the namespace so we keep CAP_SYS_ADMIN */
+          if (!(flags & CLONE_NEWUSER)) {
             int r = real_unshare(flags | CLONE_NEWUSER);
             if (r == 0) {
               char buf[64];
-              write_file("/proc/self/setgroups", "deny");
-              snprintf(buf, sizeof(buf), "0 %u 1\n", orig_uid);
-              write_file("/proc/self/uid_map", buf);
-              snprintf(buf, sizeof(buf), "0 %u 1\n", orig_gid);
-              write_file("/proc/self/gid_map", buf);
+              write_proc_file("/proc/self/setgroups", "deny");
+              snprintf(buf, sizeof(buf), "0 %u 1\n", cur_uid);
+              write_proc_file("/proc/self/uid_map", buf);
+              snprintf(buf, sizeof(buf), "0 %u 1\n", cur_gid);
+              write_proc_file("/proc/self/gid_map", buf);
               return 0;
             }
           }
-          return real_unshare(flags);
+
+          return -1;
         }
         EOF
-        $CC -shared -fPIC -O2 nosuid.c -o "$out/lib/libdarling-nosuid.so" -ldl
+        $CC -shared -fPIC -O2 nosuid.c -o "$out/lib/libdarling-nosuid-v2.so" -ldl
       '';
 
       # Intercepts shutdown-user.sh to prevent infinite sudo loops while keeping git clean
@@ -249,14 +261,17 @@
           git -C build/darling-src checkout -- tools/shutdown-user.sh 2>/dev/null || true
         fi
 
-        # Wrap /usr/local/bin/darling with our rootless namespace preload library
+        # Wrap /usr/local/bin/darling with our rootless namespace preload library v2
         wrap_darling_bin() {
-          if [ -f "/usr/local/bin/darling" ] && ! grep -q "libdarling-nosuid.so" "/usr/local/bin/darling" 2>/dev/null; then
-            echo "[lol-darling] Wrapping /usr/local/bin/darling for rootless FHS execution..."
+          if [ -f "/usr/local/bin/darling" ] && [ ! -f "/usr/local/bin/darling.real" ]; then
             mv /usr/local/bin/darling /usr/local/bin/darling.real
+          fi
+          if [ -f "/usr/local/bin/darling.real" ]; then
             cat << 'EOF' > /usr/local/bin/darling
 #!/bin/sh
-export LD_PRELOAD="${darlingNosuidLib}/lib/libdarling-nosuid.so''${LD_PRELOAD:+:$LD_PRELOAD}"
+export DARLING_HOST_UID="$(id -u)"
+export DARLING_HOST_GID="$(id -g)"
+export LD_PRELOAD="${darlingNosuidLib}/lib/libdarling-nosuid-v2.so''${LD_PRELOAD:+:$LD_PRELOAD}"
 exec /usr/local/bin/darling.real "$@"
 EOF
             chmod +x /usr/local/bin/darling
@@ -285,7 +300,7 @@ EOF
           ./scripts/install-runtime.sh
         else
           wrap_darling_bin
-          # Ensure install-runtime.sh has completed if it failed on the setuid check previously
+          # Ensure install-runtime.sh has completed if it failed on the namespace check previously
           if [ ! -e "$HOME/.darling/usr" ] && [ ! -L "$HOME/.darling/system-root" ]; then
             echo "[lol-darling] Finishing runtime setup..."
             ./scripts/install-runtime.sh
