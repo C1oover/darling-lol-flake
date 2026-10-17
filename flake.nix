@@ -87,10 +87,22 @@
           "$target_inc/32"
       '';
 
+      # Intercepts shutdown-user.sh to prevent infinite sudo loops while keeping git clean
       sudoShim = pkgs.writeShellScriptBin "sudo" ''
+        for arg in "$@"; do
+          case "$arg" in
+            *shutdown-user.sh*)
+              pkill -f darlingserver 2>/dev/null || true
+              exit 0
+              ;;
+          esac
+        done
+
         while [ $# -gt 0 ]; do
           case "$1" in
-            -E|-H|-n|-s|-i|-A|-u*|-g*|-C*|-D*|-R*) shift ;;
+            -E|-H|-n|-s|-i|-A) shift ;;
+            -u|-g|-C|-D|-R) shift 2 ;;
+            -u*|-g*|-C*|-D*|-R*) shift ;;
             --) shift; break ;;
             -*) shift ;;
             *) break ;;
@@ -102,6 +114,12 @@
         else
           exec "$@"
         fi
+      '';
+
+      # Prevents cmake --install from failing when setting file capabilities inside bwrap
+      setcapShim = pkgs.writeShellScriptBin "setcap" ''
+        ${pkgs.libcap}/bin/setcap "$@" 2>/dev/null || true
+        exit 0
       '';
 
       lolInnerRunner = pkgs.writeShellScriptBin "lol-darling-inner" ''
@@ -119,16 +137,19 @@
 
         mkdir -p "$WORKDIR" /usr/local/bin /usr/local/libexec /usr/local/lib /usr/local/share
 
-        # Completely wipe workdir on stamp change to ensure a pristine state
         if [ ! -f "$STAMP_FILE" ] || [ "$(cat "$STAMP_FILE")" != "$CURRENT_SRC" ]; then
-          echo "[lol-darling] Syncing fresh darling-lol repository to $WORKDIR..."
-          rm -rf "$WORKDIR"
-          mkdir -p "$WORKDIR"
+          echo "[lol-darling] Syncing darling-lol repository to $WORKDIR..."
           rsync -r --no-g --no-o --chmod=u+rwX "$CURRENT_SRC/" "$WORKDIR/"
           echo "$CURRENT_SRC" > "$STAMP_FILE"
         fi
 
         cd "$WORKDIR"
+
+        # Restore tools/shutdown-user.sh in git so build.sh patch verification succeeds
+        # while preserving all compiled objects in build/darling-src/build
+        if [ -d "build/darling-src/.git" ]; then
+          git -C build/darling-src checkout -- tools/shutdown-user.sh 2>/dev/null || true
+        fi
 
         if [ ! -d "/usr/local/libexec/darling" ] || [ ! -x "/usr/local/bin/darling" ]; then
           echo "[lol-darling] Verifying Smart Clang toolchain..."
@@ -142,20 +163,9 @@
           build/venv/bin/pip install --upgrade pip
           build/venv/bin/pip install -r requirements.txt
 
-          # Configure sets up submodules and applies patches first
           build/venv/bin/python3 scripts/configure.py --guest-user "$USER"
-
-          # Neutralize shutdown-user.sh AFTER configuration and patch application are done
-          find . -name "shutdown-user.sh" -type f 2>/dev/null | while read -r script; do
-            echo "[lol-darling] Neutralizing root check in $script..."
-            cat << 'EOF' > "$script"
-#!/bin/sh
-exit 0
-EOF
-            chmod +x "$script"
-          done
           
-          export MAKEFLAGS="-j2"
+          export MAKEFLAGS="-j4"
           ./scripts/build.sh
           
           cmake --install build/darling-src/build --prefix /usr/local
@@ -208,6 +218,7 @@ EOF
 
         targetPkgs = pkgs: with pkgs; [
           sudoShim
+          setcapShim
           lolInnerRunner
           gcc32Support
           clangUnwrappedFhsPkg
@@ -277,7 +288,8 @@ EOF
 
           fuse
           fuse3
-          libcap
+          libcap.lib
+          libcap.dev
           attr
           acl
           libffi
